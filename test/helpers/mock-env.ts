@@ -26,6 +26,8 @@ export function createMockEnv(tokens: Record<string, string> = {}, overrides: Pa
     CACHE: createMockKv() as unknown as KVNamespace,
     FITBIT_CLIENT_ID: 'test-client-id',
     FITBIT_CLIENT_SECRET: 'test-client-secret',
+    GOOGLE_CLIENT_ID: 'test-google-client-id',
+    GOOGLE_CLIENT_SECRET: 'test-google-client-secret',
     MCP_SHARED_SECRET: 'test-shared-secret',
     ALLOWED_CIDRS: '160.79.104.0/21',
     ...overrides,
