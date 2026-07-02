@@ -39,27 +39,62 @@ function dataPointsPath(dataType: string, method?: string): string {
   return method ? `${base}:${method}` : base;
 }
 
-const LIST_PAGE_SIZE = 1000;
+// list() page-size ceilings: the API caps sessions (sleep/exercise) at 25 and
+// allows up to 10k for instantaneous samples. Request 1000 for samples to
+// bound per-page payloads; the page walk below covers multi-page days.
+const LIST_PAGE_SIZE_SAMPLE = 1000;
+const LIST_PAGE_SIZE_SESSION = 25;
 // Native heart-rate samples arrive every ~5s (≈17k points/day), so a
 // full-day list can span several pages; cap the walk to bound Worker time.
 const LIST_MAX_PAGES = 20;
 
-/** Raw device/manual data points within [startTime, endTime) — RFC 3339 bounds. */
+// list() filters by a data-type-specific time field — snake_case even though
+// the {dataType} path segment is kebab-case. Sessions filter on the session
+// `interval`; instantaneous samples filter on `sample_time`. Verified against
+// the v4 docs for sleep/exercise/weight; the rest follow the documented
+// `sample_time.physical_time` pattern and want real-data confirmation.
+const LIST_TIME_FIELD: Record<string, string> = {
+  sleep: 'sleep.interval.end_time',
+  exercise: 'exercise.interval.start_time',
+  weight: 'weight.sample_time.physical_time',
+  'body-fat': 'body_fat.sample_time.physical_time',
+  'heart-rate': 'heart_rate.sample_time.physical_time',
+  'nutrition-log': 'nutrition_log.sample_time.physical_time',
+  hydration: 'hydration.sample_time.physical_time',
+};
+
+function listTimeField(dataType: string): string {
+  const known = LIST_TIME_FIELD[dataType];
+  if (known) return known;
+  const guess = `${dataType.replace(/-/g, '_')}.sample_time.physical_time`;
+  console.log(`[google-health] no list() filter field mapped for "${dataType}"; guessing ${guess}`);
+  return guess;
+}
+
+/**
+ * Raw device/manual data points within [startTime, endTime) — RFC 3339 bounds.
+ *
+ * `list` is a standard method: GET on the collection with a `filter` query
+ * expression (NOT a POST `:list` custom method — that path 404s). The time
+ * bounds map to a data-type-specific filter field via {@link listTimeField}.
+ */
 export async function listDataPoints(
   client: GoogleHealthClient,
   dataType: string,
   range: { startTime: string; endTime: string },
 ): Promise<LooseRecord[]> {
+  const field = listTimeField(dataType);
+  const filter = `${field} >= "${range.startTime}" AND ${field} < "${range.endTime}"`;
+  const pageSize = field.includes('.interval.') ? LIST_PAGE_SIZE_SESSION : LIST_PAGE_SIZE_SAMPLE;
   const points: LooseRecord[] = [];
   let pageToken: string | undefined;
   for (let page = 0; page < LIST_MAX_PAGES; page++) {
     const res = await client.requestJson(DataPointsPageSchema, {
-      path: dataPointsPath(dataType, 'list'),
-      method: 'POST',
-      json: {
-        startTime: range.startTime,
-        endTime: range.endTime,
-        pageSize: LIST_PAGE_SIZE,
+      path: dataPointsPath(dataType),
+      method: 'GET',
+      query: {
+        filter,
+        pageSize,
         ...(pageToken ? { pageToken } : {}),
       },
     });
@@ -70,7 +105,17 @@ export async function listDataPoints(
   return points;
 }
 
-/** One-bucket-per-day aggregation over [startDate, endDate] (YYYY-MM-DD, inclusive). */
+/**
+ * One-bucket-per-day aggregation over [startDate, endDate] (YYYY-MM-DD, inclusive).
+ *
+ * dailyRollUp is a POST custom method whose body is a closed-open `range` of
+ * CivilDateTime values (start inclusive, end exclusive) plus `windowSizeDays`
+ * (https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints/dailyRollUp).
+ * Callers pass an inclusive endDate, so the exclusive upper bound is the day
+ * after. The CivilDateTime {year, month, day} shape is inferred from the
+ * "civil"/"daily" naming — the standalone type page is unreachable, so this is
+ * a candidate awaiting real-data confirmation (see docs/journal.md checklist).
+ */
 export async function dailyRollUp(
   client: GoogleHealthClient,
   dataType: string,
@@ -80,9 +125,18 @@ export async function dailyRollUp(
   const res = await client.requestJson(RollUpResponseSchema, {
     path: dataPointsPath(dataType, 'dailyRollUp'),
     method: 'POST',
-    json: { startDate, endDate },
+    json: {
+      range: { start: civilDate(startDate), end: civilDate(addDays(endDate, 1)) },
+      windowSizeDays: 1,
+    },
   });
   return res.buckets ?? [];
+}
+
+/** YYYY-MM-DD → CivilDateTime `{year, month, day}` for rollUp ranges. */
+function civilDate(date: string): { year: number; month: number; day: number } {
+  const [year, month, day] = date.split('-');
+  return { year: Number(year), month: Number(month), day: Number(day) };
 }
 
 /** Create/update data points. Returns the server's echo (may be empty). */
