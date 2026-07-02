@@ -26,10 +26,6 @@ const DataPointsPageSchema = z.object({
   nextPageToken: z.string().optional(),
 });
 
-const RollUpResponseSchema = z.object({
-  buckets: z.array(LooseRecordSchema).optional(),
-});
-
 const PatchResponseSchema = z.object({
   dataPoints: z.array(LooseRecordSchema).optional(),
 });
@@ -49,18 +45,33 @@ const LIST_PAGE_SIZE_SESSION = 25;
 const LIST_MAX_PAGES = 20;
 
 // list() filters by a data-type-specific time field — snake_case even though
-// the {dataType} path segment is kebab-case. Sessions filter on the session
-// `interval`; instantaneous samples filter on `sample_time`. Verified against
-// the v4 docs for sleep/exercise/weight; the rest follow the documented
-// `sample_time.physical_time` pattern and want real-data confirmation.
+// the {dataType} path segment is kebab-case. The member and its literal format
+// vary by category (all verified against live v4 data 2026-07-02):
+//   - Session / interval / log types (sleep, exercise, nutrition-log,
+//     hydration-log, and the aggregate steps/distance/energy types) filter on
+//     `interval.*`. `civil_start_time` takes a quoted date-only literal
+//     ("2026-07-01"); sleep's `end_time` takes a quoted RFC3339 instant.
+//   - Instantaneous sample types (heart-rate, weight, body-fat) filter on
+//     `sample_time.physical_time` with a quoted RFC3339 instant.
+//   - Pre-aggregated daily metrics (daily-*) filter on `date` with a BARE
+//     (unquoted) civil-date literal — quoting or RFC3339 is rejected.
 const LIST_TIME_FIELD: Record<string, string> = {
   sleep: 'sleep.interval.end_time',
-  exercise: 'exercise.interval.start_time',
+  exercise: 'exercise.interval.civil_start_time',
+  steps: 'steps.interval.civil_start_time',
+  distance: 'distance.interval.civil_start_time',
+  'active-energy-burned': 'active_energy_burned.interval.civil_start_time',
+  'total-calories': 'total_calories.interval.civil_start_time',
+  'nutrition-log': 'nutrition_log.interval.civil_start_time',
+  'hydration-log': 'hydration_log.interval.civil_start_time',
   weight: 'weight.sample_time.physical_time',
   'body-fat': 'body_fat.sample_time.physical_time',
   'heart-rate': 'heart_rate.sample_time.physical_time',
-  'nutrition-log': 'nutrition_log.sample_time.physical_time',
-  hydration: 'hydration.sample_time.physical_time',
+  'daily-resting-heart-rate': 'daily_resting_heart_rate.date',
+  'daily-oxygen-saturation': 'daily_oxygen_saturation.date',
+  'daily-respiratory-rate': 'daily_respiratory_rate.date',
+  'daily-heart-rate-variability': 'daily_heart_rate_variability.date',
+  'daily-sleep-temperature-derivations': 'daily_sleep_temperature_derivations.date',
 };
 
 function listTimeField(dataType: string): string {
@@ -69,6 +80,20 @@ function listTimeField(dataType: string): string {
   const guess = `${dataType.replace(/-/g, '_')}.sample_time.physical_time`;
   console.log(`[google-health] no list() filter field mapped for "${dataType}"; guessing ${guess}`);
   return guess;
+}
+
+/**
+ * Render a filter bound in the literal form the target member expects:
+ *   - `.date` daily metrics take a BARE civil date (YYYY-MM-DD, no quotes).
+ *   - `.civil_start_time` interval members take a QUOTED civil date.
+ *   - everything else (physical_time, end_time) takes a QUOTED RFC3339 instant.
+ * Callers hand us RFC3339 bounds; date-only members just use the date head.
+ */
+function filterLiteral(field: string, value: string): string {
+  const dateHead = value.length > 10 ? value.slice(0, 10) : value;
+  if (field.endsWith('.date')) return dateHead;
+  if (field.endsWith('.civil_start_time')) return `"${dateHead}"`;
+  return `"${value}"`;
 }
 
 /**
@@ -84,8 +109,13 @@ export async function listDataPoints(
   range: { startTime: string; endTime: string },
 ): Promise<LooseRecord[]> {
   const field = listTimeField(dataType);
-  const filter = `${field} >= "${range.startTime}" AND ${field} < "${range.endTime}"`;
-  const pageSize = field.includes('.interval.') ? LIST_PAGE_SIZE_SESSION : LIST_PAGE_SIZE_SAMPLE;
+  const lo = filterLiteral(field, range.startTime);
+  const hi = filterLiteral(field, range.endTime);
+  const filter = `${field} >= ${lo} AND ${field} < ${hi}`;
+  // Sessions (sleep/exercise) cap at 25; the high-volume aggregate interval
+  // types (steps/distance/energy) and samples allow up to 10k.
+  const isSession = dataType === 'sleep' || dataType === 'exercise';
+  const pageSize = isSession ? LIST_PAGE_SIZE_SESSION : LIST_PAGE_SIZE_SAMPLE;
   const points: LooseRecord[] = [];
   let pageToken: string | undefined;
   for (let page = 0; page < LIST_MAX_PAGES; page++) {
@@ -103,40 +133,6 @@ export async function listDataPoints(
     if (!pageToken) break;
   }
   return points;
-}
-
-/**
- * One-bucket-per-day aggregation over [startDate, endDate] (YYYY-MM-DD, inclusive).
- *
- * dailyRollUp is a POST custom method whose body is a closed-open `range` of
- * CivilDateTime values (start inclusive, end exclusive) plus `windowSizeDays`
- * (https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints/dailyRollUp).
- * Callers pass an inclusive endDate, so the exclusive upper bound is the day
- * after. The CivilDateTime {year, month, day} shape is inferred from the
- * "civil"/"daily" naming — the standalone type page is unreachable, so this is
- * a candidate awaiting real-data confirmation (see docs/journal.md checklist).
- */
-export async function dailyRollUp(
-  client: GoogleHealthClient,
-  dataType: string,
-  startDate: string,
-  endDate: string,
-): Promise<LooseRecord[]> {
-  const res = await client.requestJson(RollUpResponseSchema, {
-    path: dataPointsPath(dataType, 'dailyRollUp'),
-    method: 'POST',
-    json: {
-      range: { start: civilDate(startDate), end: civilDate(addDays(endDate, 1)) },
-      windowSizeDays: 1,
-    },
-  });
-  return res.buckets ?? [];
-}
-
-/** YYYY-MM-DD → CivilDateTime `{year, month, day}` for rollUp ranges. */
-function civilDate(date: string): { year: number; month: number; day: number } {
-  const [year, month, day] = date.split('-');
-  return { year: Number(year), month: Number(month), day: Number(day) };
 }
 
 /** Create/update data points. Returns the server's echo (may be empty). */
@@ -179,6 +175,31 @@ function asNumber(v: unknown): number | undefined {
 function valueRecord(record: LooseRecord): LooseRecord {
   const v = record.value;
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as LooseRecord) : {};
+}
+
+/**
+ * A data point nests its payload under a key named after the dataType, e.g.
+ * `dp.sleep.interval.startTime` (verified against live Fitbit-sourced data,
+ * 2026-07-02). Pull that sub-object out so the pickers can probe inside it;
+ * returns `{}` when the key is absent so callers stay branch-free.
+ */
+export function subRecord(record: LooseRecord, key: string): LooseRecord {
+  const v = record[key];
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as LooseRecord) : {};
+}
+
+/** kebab-case dataType id → the camelCase key its payload nests under. */
+export function dataTypeKey(dataType: string): string {
+  return dataType.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+/**
+ * A data point's payload nests under a camelCase key named after the dataType
+ * (e.g. `dp.dailyRestingHeartRate.*`, `dp.steps.*`). Pull that sub-object out;
+ * returns `{}` when absent so callers stay branch-free.
+ */
+export function payloadOf(dp: LooseRecord, dataType: string): LooseRecord {
+  return subRecord(dp, dataTypeKey(dataType));
 }
 
 /**
@@ -231,12 +252,28 @@ export function stripUndefined(record: LooseRecord): LooseRecord {
   return Object.fromEntries(Object.entries(record).filter(([, v]) => v !== undefined));
 }
 
-/** YYYY-MM-DD (JST) that a roll-up bucket describes. */
-export function bucketDate(bucket: LooseRecord): string | undefined {
-  const date = pickString(bucket, ['date', 'startDate']);
-  if (date) return date.slice(0, 10);
-  const startTime = pickString(bucket, ['startTime']);
-  return startTime ? toJstDateString(startTime) : undefined;
+/**
+ * The YYYY-MM-DD a daily-metric data point describes. Its `date` is a
+ * CivilDate object `{year, month, day}` (verified live 2026-07-02); fall back
+ * to a string date or the interval/sample start for non-daily shapes.
+ */
+export function dataPointDate(payload: LooseRecord): string | undefined {
+  const civ = payload.date;
+  if (civ && typeof civ === 'object' && !Array.isArray(civ)) {
+    const rec = civ as LooseRecord;
+    const y = asNumber(rec.year);
+    const m = asNumber(rec.month);
+    const d = asNumber(rec.day);
+    if (y !== undefined && m !== undefined && d !== undefined) {
+      return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
+  const dateStr = pickString(payload, ['date', 'startDate']);
+  if (dateStr) return dateStr.slice(0, 10);
+  const interval = subRecord(payload, 'interval');
+  const start =
+    pickString(interval, ['startTime', 'civilStartTime']) ?? pickString(payload, ['startTime']);
+  return start ? toJstDateString(start) : undefined;
 }
 
 // ---------- data point identity ----------

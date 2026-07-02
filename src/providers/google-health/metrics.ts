@@ -1,12 +1,39 @@
 import type { CardioFitness, HrvDay, RespiratoryRateDay, SkinTempDay, SpO2Day } from '../types';
 import type { GoogleHealthClient } from './client';
-import { bucketDate, dailyRollUp, type LooseRecord, pickNumber } from './datapoints';
+import {
+  dataPointDate,
+  jstDayEnd,
+  jstDayStart,
+  type LooseRecord,
+  listDataPoints,
+  payloadOf,
+  pickNumber,
+} from './datapoints';
 
-function perDay<T>(buckets: LooseRecord[], map: (bucket: LooseRecord, dateTime: string) => T): T[] {
-  return buckets.flatMap((bucket) => {
-    const dateTime = bucketDate(bucket);
-    return dateTime ? [map(bucket, dateTime)] : [];
+/**
+ * List a daily-metric dataType over [start, end] (inclusive) and map each
+ * point's nested payload to a dated value. Daily metrics filter on `.date`
+ * and carry a CivilDate object, both handled by listDataPoints/dataPointDate.
+ */
+async function perDay<T>(
+  client: GoogleHealthClient,
+  dataType: string,
+  start: string,
+  end: string,
+  map: (payload: LooseRecord, dateTime: string) => T,
+): Promise<T[]> {
+  const dps = await listDataPoints(client, dataType, {
+    startTime: jstDayStart(start),
+    endTime: jstDayEnd(end),
   });
+  return dps
+    .flatMap((dp) => {
+      const payload = payloadOf(dp, dataType);
+      const dateTime = dataPointDate(payload) ?? dataPointDate(dp);
+      return dateTime ? [{ dateTime, mapped: map(payload, dateTime) }] : [];
+    })
+    .sort((a, b) => a.dateTime.localeCompare(b.dateTime))
+    .map((x) => x.mapped);
 }
 
 export async function getSpO2(
@@ -14,13 +41,12 @@ export async function getSpO2(
   start: string,
   end: string,
 ): Promise<SpO2Day[]> {
-  const buckets = await dailyRollUp(client, 'daily-oxygen-saturation', start, end);
-  return perDay(buckets, (bucket, dateTime) => ({
+  return perDay(client, 'daily-oxygen-saturation', start, end, (payload, dateTime) => ({
     dateTime,
     value: {
-      avg: pickNumber(bucket, ['avg', 'average', 'mean', 'percent']),
-      min: pickNumber(bucket, ['min', 'minimum']),
-      max: pickNumber(bucket, ['max', 'maximum']),
+      avg: pickNumber(payload, ['averagePercentage', 'avg', 'average', 'mean', 'percent']),
+      min: pickNumber(payload, ['lowerBoundPercentage', 'min', 'minimum']),
+      max: pickNumber(payload, ['upperBoundPercentage', 'max', 'maximum']),
     },
   }));
 }
@@ -30,11 +56,10 @@ export async function getRespiratoryRate(
   start: string,
   end: string,
 ): Promise<RespiratoryRateDay[]> {
-  const buckets = await dailyRollUp(client, 'respiratory-rate', start, end);
-  return perDay(buckets, (bucket, dateTime) => ({
+  return perDay(client, 'daily-respiratory-rate', start, end, (payload, dateTime) => ({
     dateTime,
     value: {
-      breathingRate: pickNumber(bucket, ['breathingRate', 'breathsPerMinute', 'avg', 'average']),
+      breathingRate: pickNumber(payload, ['breathsPerMinute', 'breathingRate', 'avg', 'average']),
     },
   }));
 }
@@ -44,19 +69,25 @@ export async function getSkinTemperature(
   start: string,
   end: string,
 ): Promise<SkinTempDay[]> {
-  const buckets = await dailyRollUp(client, 'daily-sleep-temperature-derivations', start, end);
   // Google reports an absolute °C where Fitbit reported a nightly relative
   // deviation — both fields are surfaced so consumers can tell them apart.
-  return perDay(buckets, (bucket, dateTime) => ({
+  return perDay(client, 'daily-sleep-temperature-derivations', start, end, (payload, dateTime) => ({
     dateTime,
     value: {
-      nightlyRelative: pickNumber(bucket, [
+      nightlyRelative: pickNumber(payload, [
+        'relativeNightlyStddev30dCelsius',
         'nightlyRelative',
         'relativeDeviation',
         'deviation',
         'delta',
       ]),
-      absolute: pickNumber(bucket, ['absolute', 'temperatureCelsius', 'celsius', 'avg', 'average']),
+      absolute: pickNumber(payload, [
+        'nightlyTemperatureCelsius',
+        'baselineTemperatureCelsius',
+        'absolute',
+        'temperatureCelsius',
+        'celsius',
+      ]),
     },
   }));
 }
@@ -66,12 +97,21 @@ export async function getHRV(
   start: string,
   end: string,
 ): Promise<HrvDay[]> {
-  const buckets = await dailyRollUp(client, 'daily-heart-rate-variability', start, end);
-  return perDay(buckets, (bucket, dateTime) => ({
+  return perDay(client, 'daily-heart-rate-variability', start, end, (payload, dateTime) => ({
     dateTime,
     value: {
-      dailyRmssd: pickNumber(bucket, ['dailyRmssd', 'rmssd', 'avg', 'average']),
-      deepRmssd: pickNumber(bucket, ['deepRmssd', 'deepSleepRmssd']),
+      dailyRmssd: pickNumber(payload, [
+        'averageHeartRateVariabilityMilliseconds',
+        'dailyRmssd',
+        'rmssd',
+        'avg',
+        'average',
+      ]),
+      deepRmssd: pickNumber(payload, [
+        'deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds',
+        'deepRmssd',
+        'deepSleepRmssd',
+      ]),
     },
   }));
 }
@@ -80,16 +120,30 @@ export async function getCardioFitness(
   client: GoogleHealthClient,
   date: string,
 ): Promise<CardioFitness> {
-  let buckets = await dailyRollUp(client, 'vo2-max', date, date);
-  if (buckets.length === 0) {
-    // Running-derived estimates live under a separate data type.
-    buckets = await dailyRollUp(client, 'run-vo2-max', date, date).catch(() => []);
-  }
-  const bucket = buckets[0];
-  return {
-    dateTime: date,
-    value: {
-      vo2Max: bucket ? pickNumber(bucket, ['vo2Max', 'vo2max', 'avg', 'average']) : undefined,
-    },
+  // No live data for this user, so the value field name is a best guess;
+  // vo2-max is a sample type filtered on sample_time.physical_time.
+  const vo2 = async (dataType: string): Promise<number | undefined> => {
+    try {
+      const dps = await listDataPoints(client, dataType, {
+        startTime: jstDayStart(date),
+        endTime: jstDayEnd(date),
+      });
+      for (const dp of dps) {
+        const v = pickNumber(payloadOf(dp, dataType), [
+          'maxOxygenConsumption',
+          'vo2Max',
+          'vo2max',
+          'value',
+        ]);
+        if (v !== undefined) return v;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.log(`[google-health] ${dataType} list failed (skipping): ${reason}`);
+    }
+    return undefined;
   };
+
+  const value = (await vo2('vo2-max')) ?? (await vo2('run-vo2-max'));
+  return { dateTime: date, value: { vo2Max: value } };
 }

@@ -10,37 +10,53 @@ import {
   type LooseRecord,
   listDataPoints,
   patchDataPoints,
+  payloadOf,
   pickNumber,
   pickString,
+  subRecord,
   toJstClockTime,
 } from './datapoints';
 
+/** Sample instant for a body point: `<payload>.sampleTime.physicalTime`. */
+function sampleTime(payload: LooseRecord): string | undefined {
+  const st = subRecord(payload, 'sampleTime');
+  return (
+    pickString(st, ['physicalTime']) ??
+    pickString(payload, ['sampleTime', 'startTime', 'endTime', 'time'])
+  );
+}
+
 function weightFromDataPoint(dp: LooseRecord): WeightLog | undefined {
-  const t = pickString(dp, ['startTime', 'endTime', 'time']);
-  const grams = pickNumber(dp, ['weightGrams', 'grams']);
-  const kg = grams !== undefined ? grams / 1000 : pickNumber(dp, ['weightKg', 'weight', 'kg']);
+  const payload = payloadOf(dp, 'weight');
+  const t = sampleTime(payload);
+  const grams = pickNumber(payload, ['weightGrams', 'grams']);
+  const kg =
+    grams !== undefined
+      ? grams / 1000
+      : pickNumber(payload, ['kilograms', 'weightKg', 'weight', 'kg', 'value']);
   if (kg === undefined || !t) return undefined;
   return {
     logId: dataPointLogId(dp),
     date: toJstDateString(t),
     time: toJstClockTime(t),
     weight: kg,
-    bmi: pickNumber(dp, ['bmi']),
-    fat: pickNumber(dp, ['fat', 'bodyFat', 'percentage']),
-    source: pickString(dp, ['source', 'dataOrigin', 'origin']),
+    bmi: pickNumber(payload, ['bmi']),
+    fat: pickNumber(payload, ['fat', 'bodyFat', 'percentage']),
+    source: pickString(payload, ['source', 'dataOrigin', 'origin']),
   };
 }
 
 function bodyFatFromDataPoint(dp: LooseRecord): BodyFatLog | undefined {
-  const t = pickString(dp, ['startTime', 'endTime', 'time']);
-  const fat = pickNumber(dp, ['percentage', 'fat', 'bodyFat', 'percent']);
+  const payload = payloadOf(dp, 'body-fat');
+  const t = sampleTime(payload);
+  const fat = pickNumber(payload, ['percentage', 'fat', 'bodyFat', 'percent', 'value']);
   if (fat === undefined || !t) return undefined;
   return {
     logId: dataPointLogId(dp),
     date: toJstDateString(t),
     time: toJstClockTime(t),
     fat,
-    source: pickString(dp, ['source', 'dataOrigin', 'origin']),
+    source: pickString(payload, ['source', 'dataOrigin', 'origin']),
   };
 }
 
