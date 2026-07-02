@@ -7,9 +7,17 @@ compatibility_flags = ["nodejs_compat"]
 # Anthropic's published outbound CIDR for Claude → MCP server connections.
 ALLOWED_CIDRS = "160.79.104.0/21"
 
+# Which backend serves the MCP tools:
+#   "google" — Google Health API v4 (health.googleapis.com), the Fitbit successor
+#   "fitbit" — legacy Fitbit Web API (api.fitbit.com, shuts down 2026-09)
+# The Worker defaults to "fitbit" when this var is unset, so existing
+# deployments keep working. Flip to "google" after `pnpm run setup:google`
+# has populated TOKENS with Google OAuth tokens.
+HEALTH_PROVIDER = "google"
+
 # Create both KV namespaces before `wrangler deploy`:
-#   wrangler kv:namespace create TOKENS
-#   wrangler kv:namespace create CACHE
+#   wrangler kv namespace create TOKENS
+#   wrangler kv namespace create CACHE
 # Then paste the returned ids below.
 
 [[kv_namespaces]]
@@ -21,6 +29,9 @@ binding = "CACHE"
 id = "<your-cache-namespace-id>"
 
 # Set the following secrets:
+#   wrangler secret put GOOGLE_CLIENT_ID
+#   wrangler secret put GOOGLE_CLIENT_SECRET
+#   wrangler secret put MCP_SHARED_SECRET   # `openssl rand -hex 32`
+# Only needed while HEALTH_PROVIDER = "fitbit":
 #   wrangler secret put FITBIT_CLIENT_ID
 #   wrangler secret put FITBIT_CLIENT_SECRET
-#   wrangler secret put MCP_SHARED_SECRET   # `openssl rand -base64 32`

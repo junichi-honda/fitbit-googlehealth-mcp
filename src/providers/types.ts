@@ -299,10 +299,13 @@ export const RespiratoryRateDaySchema = z.object({
 export type RespiratoryRateDay = z.infer<typeof RespiratoryRateDaySchema>;
 
 // ---------- Skin temperature ----------
+// Fitbit reports a nightly *relative* deviation; Google Health reports an
+// *absolute* temperature in °C. Both are optional so either provider fits.
 export const SkinTempDaySchema = z.object({
   dateTime: z.string(),
   value: z.object({
     nightlyRelative: z.number().optional(),
+    absolute: z.number().optional(),
   }),
   logType: z.string().optional(),
 });
