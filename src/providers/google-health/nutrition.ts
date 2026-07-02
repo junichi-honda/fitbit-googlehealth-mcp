@@ -18,9 +18,11 @@ import {
   type LooseRecord,
   listDataPoints,
   patchDataPoints,
+  payloadOf,
   pickNumber,
   pickString,
   stripUndefined,
+  subRecord,
 } from './datapoints';
 
 const MEAL_TYPE_GOOGLE: Record<MealTypeT, string> = {
@@ -66,35 +68,46 @@ const MEAL_TIME: Record<MealTypeT, string> = {
   Anytime: '12:00:00',
 };
 
-const WATER_KEYS = ['volumeMl', 'amountMl', 'ml', 'volume', 'amount'] as const;
+// hydration-log nests the volume under `hydrationLog.amountConsumed.milliliters`
+// (a string); keep the flatter candidates for older/echoed shapes.
+const WATER_KEYS = ['milliliters', 'volumeMl', 'amountMl', 'ml', 'volume', 'amount'] as const;
 
-function nutritionalValuesFrom(dp: LooseRecord): NutritionalValues {
+/** Nutrition payload nests under `dp.nutritionLog`; nutrients sit inside it. */
+function nutritionalValuesFrom(payload: LooseRecord): NutritionalValues {
   return {
-    calories: pickNumber(dp, ['calories', 'energyKcal']),
-    carbs: pickNumber(dp, ['totalCarbohydrate', 'carbs', 'carbohydrateGrams']),
-    fat: pickNumber(dp, ['totalFat', 'fat']),
-    fiber: pickNumber(dp, ['dietaryFiber', 'fiber']),
-    protein: pickNumber(dp, ['protein']),
-    sodium: pickNumber(dp, ['sodium']),
-    sugar: pickNumber(dp, ['sugars', 'sugar']),
+    calories: pickNumber(payload, ['calories', 'energyKcal']),
+    carbs: pickNumber(payload, ['totalCarbohydrate', 'carbs', 'carbohydrateGrams']),
+    fat: pickNumber(payload, ['totalFat', 'fat']),
+    fiber: pickNumber(payload, ['dietaryFiber', 'fiber']),
+    protein: pickNumber(payload, ['protein']),
+    sodium: pickNumber(payload, ['sodium']),
+    sugar: pickNumber(payload, ['sugars', 'sugar']),
   };
 }
 
 function foodFromDataPoint(dp: LooseRecord, logDate: string): FoodLogEntry {
-  const nutritionalValues = nutritionalValuesFrom(dp);
-  const mealType = pickString(dp, ['mealType']);
+  const payload = payloadOf(dp, 'nutrition-log');
+  const nutritionalValues = nutritionalValuesFrom(payload);
+  const mealType = pickString(payload, ['mealType']);
   return {
     logId: dataPointLogId(dp),
     loggedFood: {
-      name: pickString(dp, ['foodName', 'foodItem']),
-      brand: pickString(dp, ['brandName', 'brand']),
+      name: pickString(payload, ['foodName', 'foodItem', 'name']),
+      brand: pickString(payload, ['brandName', 'brand']),
       mealTypeId: mealType ? GOOGLE_MEAL_TO_ID[mealType.toUpperCase()] : undefined,
-      amount: pickNumber(dp, ['amount', 'servings']),
+      amount: pickNumber(payload, ['amount', 'servings']),
       calories: nutritionalValues.calories,
     },
     nutritionalValues,
     logDate,
   };
+}
+
+/** Milliliters from a hydration-log point: `hydrationLog.amountConsumed.milliliters`. */
+function waterMlFrom(dp: LooseRecord): number {
+  const payload = payloadOf(dp, 'hydration-log');
+  const amountConsumed = subRecord(payload, 'amountConsumed');
+  return pickNumber(amountConsumed, WATER_KEYS) ?? pickNumber(payload, WATER_KEYS) ?? 0;
 }
 
 function sumField(foods: FoodLogEntry[], field: keyof NutritionalValues): number | undefined {
@@ -114,9 +127,9 @@ export async function getFoodLog(client: GoogleHealthClient, date: string): Prom
   const range = { startTime: jstDayStart(date), endTime: jstDayEnd(date) };
   const [foodPoints, waterPoints] = await Promise.all([
     listDataPoints(client, 'nutrition-log', range),
-    listDataPoints(client, 'hydration', range).catch((err) => {
+    listDataPoints(client, 'hydration-log', range).catch((err) => {
       const reason = err instanceof Error ? err.message : String(err);
-      console.log(`[google-health] hydration list failed (skipping water): ${reason}`);
+      console.log(`[google-health] hydration-log list failed (skipping water): ${reason}`);
       return [] as LooseRecord[];
     }),
   ]);
@@ -124,7 +137,7 @@ export async function getFoodLog(client: GoogleHealthClient, date: string): Prom
   const foods = foodPoints.map((dp) => foodFromDataPoint(dp, date));
   const water: WaterLogEntry[] = waterPoints.map((dp) => ({
     logId: dataPointLogId(dp),
-    amount: pickNumber(dp, WATER_KEYS) ?? 0,
+    amount: waterMlFrom(dp),
   }));
   const totalWater = Math.round(water.reduce((acc, w) => acc + w.amount, 0));
 
@@ -221,13 +234,13 @@ export async function logWater(
   input: LogWaterInput,
 ): Promise<WaterLogEntry> {
   const t = jstRfc3339(input.date, '12:00:00');
-  const echoed = await patchDataPoints(client, 'hydration', [
-    { startTime: t, endTime: t, value: { volumeMl: input.amountMl } },
+  const echoed = await patchDataPoints(client, 'hydration-log', [
+    { startTime: t, endTime: t, value: { amountConsumed: { milliliters: input.amountMl } } },
   ]);
   const dp = echoed[0];
   return {
     logId: dp ? dataPointLogId(dp) : 0,
-    amount: dp ? (pickNumber(dp, WATER_KEYS) ?? input.amountMl) : input.amountMl,
+    amount: dp ? waterMlFrom(dp) || input.amountMl : input.amountMl,
   };
 }
 
@@ -236,5 +249,5 @@ export async function deleteFoodLog(client: GoogleHealthClient, logId: number): 
 }
 
 export async function deleteWaterLog(client: GoogleHealthClient, logId: number): Promise<void> {
-  await batchDeleteDataPoints(client, 'hydration', [logId]);
+  await batchDeleteDataPoints(client, 'hydration-log', [logId]);
 }

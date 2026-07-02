@@ -15,6 +15,7 @@ import {
   pickBoolean,
   pickNumber,
   pickString,
+  subRecord,
   toJstLocalIso,
 } from './datapoints';
 
@@ -36,11 +37,11 @@ function normalizeStage(raw: string): string {
   return STAGE_LEVELS[raw.toUpperCase()] ?? raw.toLowerCase();
 }
 
-function stageSegments(dp: LooseRecord): Stage[] {
-  const segments = pickArray(dp, ['stages', 'sleepStages', 'segments']) ?? [];
+function stageSegments(sleep: LooseRecord): Stage[] {
+  const segments = pickArray(sleep, ['stages', 'sleepStages', 'segments']) ?? [];
   return segments.flatMap((seg) => {
     const start = pickString(seg, ['startTime']);
-    const level = pickString(seg, ['stage', 'level', 'type']);
+    const level = pickString(seg, ['type', 'stage', 'level']);
     if (!start || !level) return [];
     const end = pickString(seg, ['endTime']);
     const seconds =
@@ -50,30 +51,64 @@ function stageSegments(dp: LooseRecord): Stage[] {
   });
 }
 
+/**
+ * Map a live data point. The payload nests under `dp.sleep`, with the window
+ * in `dp.sleep.interval.{startTime,endTime}` (UTC, paired `*UtcOffset`) and
+ * aggregates in `dp.sleep.summary` (minutes as *strings* → pickNumber coerces).
+ * `dp.sleep.stages[].type` carries SCREAMING_CASE levels. Verified against
+ * Fitbit-sourced Inspire 3 data, 2026-07-02.
+ */
 function sleepFromDataPoint(dp: LooseRecord): SleepLog | undefined {
-  const start = pickString(dp, ['startTime']);
-  const end = pickString(dp, ['endTime']);
+  const sleep = subRecord(dp, 'sleep');
+  const interval = subRecord(sleep, 'interval');
+  const start = pickString(interval, ['startTime']);
+  const end = pickString(interval, ['endTime']);
   if (!start || !end) return undefined;
   const durationMs = new Date(end).getTime() - new Date(start).getTime();
 
-  const stages = stageSegments(dp);
+  const stages = stageSegments(sleep);
   const awakeSec = stages
     .filter((s) => s.level === 'wake' || s.level === 'restless')
     .reduce((acc, s) => acc + s.seconds, 0);
   const totalStageSec = stages.reduce((acc, s) => acc + s.seconds, 0);
   const asleepSec = stages.length ? totalStageSec - awakeSec : undefined;
 
-  const totals = new Map<string, { count: number; minutes: number }>();
-  for (const s of stages) {
-    const cur = totals.get(s.level) ?? { count: 0, minutes: 0 };
-    cur.count += 1;
-    cur.minutes += s.seconds / 60;
-    totals.set(s.level, cur);
-  }
+  // Prefer the server's own stagesSummary (level → minutes/count, values as
+  // strings); fall back to counting the stage segments ourselves.
+  const apiSummary =
+    pickArray(sleep, ['stagesSummary']) ?? subArray(sleep, 'summary', 'stagesSummary');
   const summary: Record<string, Record<string, number>> = {};
-  for (const [level, { count, minutes }] of totals) {
-    summary[level] = { count, minutes: Math.round(minutes) };
+  if (apiSummary.length) {
+    for (const row of apiSummary) {
+      const level = pickString(row, ['type', 'level', 'stage']);
+      if (!level) continue;
+      summary[normalizeStage(level)] = {
+        count: pickNumber(row, ['count']) ?? 0,
+        minutes: pickNumber(row, ['minutes']) ?? 0,
+      };
+    }
+  } else {
+    const totals = new Map<string, { count: number; minutes: number }>();
+    for (const s of stages) {
+      const cur = totals.get(s.level) ?? { count: 0, minutes: 0 };
+      cur.count += 1;
+      cur.minutes += s.seconds / 60;
+      totals.set(s.level, cur);
+    }
+    for (const [level, { count, minutes }] of totals) {
+      summary[level] = { count, minutes: Math.round(minutes) };
+    }
   }
+
+  const summaryRec = subRecord(sleep, 'summary');
+  const minutesAsleep =
+    pickNumber(summaryRec, ['minutesAsleep']) ??
+    pickNumber(sleep, ['minutesAsleep']) ??
+    (asleepSec !== undefined ? Math.round(asleepSec / 60) : Math.round(durationMs / 60000));
+  const minutesAwake =
+    pickNumber(summaryRec, ['minutesAwake']) ??
+    pickNumber(sleep, ['minutesAwake']) ??
+    (stages.length ? Math.round(awakeSec / 60) : undefined);
 
   return {
     logId: dataPointLogId(dp),
@@ -81,16 +116,19 @@ function sleepFromDataPoint(dp: LooseRecord): SleepLog | undefined {
     startTime: toJstLocalIso(start),
     endTime: toJstLocalIso(end),
     duration: durationMs,
-    minutesAsleep:
-      pickNumber(dp, ['minutesAsleep']) ??
-      (asleepSec !== undefined ? Math.round(asleepSec / 60) : Math.round(durationMs / 60000)),
-    minutesAwake:
-      pickNumber(dp, ['minutesAwake']) ?? (stages.length ? Math.round(awakeSec / 60) : undefined),
-    efficiency: pickNumber(dp, ['efficiency']),
-    isMainSleep: pickBoolean(dp, ['isMainSleep', 'mainSleep']),
-    type: pickString(dp, ['type', 'sleepType']) ?? (stages.length ? 'stages' : 'classic'),
-    levels: stages.length ? { summary, data: stages } : undefined,
+    minutesAsleep,
+    minutesAwake,
+    minutesToFallAsleep: pickNumber(summaryRec, ['minutesToFallAsleep']),
+    efficiency: pickNumber(summaryRec, ['efficiency']) ?? pickNumber(sleep, ['efficiency']),
+    isMainSleep: pickBoolean(sleep, ['isMainSleep', 'mainSleep']),
+    type: pickString(sleep, ['type', 'sleepType']) ?? (stages.length ? 'stages' : 'classic'),
+    levels: Object.keys(summary).length ? { summary, data: stages } : undefined,
   };
+}
+
+/** `record[key][innerKey]` as a LooseRecord[] when both hops land on arrays. */
+function subArray(record: LooseRecord, key: string, innerKey: string): LooseRecord[] {
+  return pickArray(subRecord(record, key), [innerKey]) ?? [];
 }
 
 export async function getSleep(client: GoogleHealthClient, date: string): Promise<SleepLog[]> {

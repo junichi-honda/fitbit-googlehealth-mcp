@@ -11,18 +11,20 @@ import type { GoogleHealthClient } from './client';
 import {
   addDays,
   batchDeleteDataPoints,
-  bucketDate,
-  dailyRollUp,
+  dataPointDate,
   dataPointLogId,
   epochToJstRfc3339,
+  jstDayEnd,
   jstDayStart,
   jstRfc3339,
   type LooseRecord,
   listDataPoints,
   patchDataPoints,
+  payloadOf,
   pickNumber,
   pickString,
   stripUndefined,
+  subRecord,
   toJstLocalIso,
 } from './datapoints';
 
@@ -40,55 +42,105 @@ const RESOURCE_DATA_TYPE: Partial<Record<ActivityResourceT, string>> = {
   activityCalories: 'active-energy-burned',
 };
 
-const STEPS_KEYS = ['steps', 'count', 'total', 'sum'] as const;
-const CALORIES_KEYS = ['calories', 'energyKcal', 'kcal', 'total', 'sum'] as const;
-const ACTIVE_CALORIES_KEYS = ['activeEnergyBurned', ...CALORIES_KEYS] as const;
-const RESTING_HR_KEYS = ['restingHeartRate', 'bpm', 'avg', 'average'] as const;
+const RESTING_HR_KEYS = ['beatsPerMinute', 'restingHeartRate', 'bpm', 'avg', 'average'] as const;
 
-/** Google APIs report distance in meters by default; Fitbit tools expect km. */
-function distanceKmFrom(record: LooseRecord): number | undefined {
-  const km = pickNumber(record, ['distanceKm', 'km']);
-  if (km !== undefined) return km;
-  const meters = pickNumber(record, ['distanceMeters', 'meters', 'distance', 'total', 'sum']);
-  return meters !== undefined ? meters / 1000 : undefined;
+/**
+ * Per-data-point numeric contribution, read from the dataType's nested payload.
+ * The aggregate interval types report string-valued numbers that pickNumber
+ * coerces: steps as `count`, distance as `millimeters` (→ km via /1e6), and
+ * active-energy as `kcal`.
+ */
+function pointValue(payload: LooseRecord, dataType: string): number | undefined {
+  switch (dataType) {
+    case 'steps':
+      return pickNumber(payload, ['count', 'steps']);
+    case 'distance': {
+      const mm = pickNumber(payload, ['millimeters', 'distanceMillimeters']);
+      if (mm !== undefined) return mm / 1_000_000;
+      const m = pickNumber(payload, ['meters', 'distanceMeters']);
+      return m !== undefined ? m / 1000 : undefined;
+    }
+    case 'active-energy-burned':
+      return pickNumber(payload, ['kcal', 'energyKcal', 'calories']);
+    default:
+      return pickNumber(payload, ['value']);
+  }
+}
+
+/** Sum each day's data points into a `YYYY-MM-DD → total` map. */
+async function sumByDay(
+  client: GoogleHealthClient,
+  dataType: string,
+  start: string,
+  end: string,
+): Promise<Map<string, number>> {
+  const dps = await listDataPoints(client, dataType, {
+    startTime: jstDayStart(start),
+    endTime: jstDayEnd(end),
+  });
+  const totals = new Map<string, number>();
+  for (const dp of dps) {
+    const payload = payloadOf(dp, dataType);
+    const day = dataPointDate(payload) ?? dataPointDate(dp);
+    const value = pointValue(payload, dataType);
+    if (!day || value === undefined) continue;
+    totals.set(day, (totals.get(day) ?? 0) + value);
+  }
+  return totals;
 }
 
 export async function getDailySummary(
   client: GoogleHealthClient,
   date: string,
 ): Promise<DailySummary> {
-  const single = async (dataType: string): Promise<LooseRecord | undefined> =>
-    (await dailyRollUp(client, dataType, date, date))[0];
-  // `steps` is the canary: its failure (auth, scope) propagates. The other
-  // roll-ups degrade to undefined so one missing data type doesn't blank
-  // the whole summary.
-  const optional = (dataType: string): Promise<LooseRecord | undefined> =>
-    single(dataType).catch((err) => {
+  // `steps` is the canary: its failure (auth, scope) propagates. The others
+  // degrade to an empty map so one missing data type doesn't blank the
+  // whole summary. total-calories has no working retrieval path on the v4
+  // API, so caloriesOut is intentionally left undefined.
+  const optional = (dataType: string): Promise<Map<string, number>> =>
+    sumByDay(client, dataType, date, date).catch((err) => {
       const reason = err instanceof Error ? err.message : String(err);
-      console.log(`[google-health] dailyRollUp ${dataType} failed (skipping): ${reason}`);
-      return undefined;
+      console.log(`[google-health] ${dataType} list failed (skipping): ${reason}`);
+      return new Map<string, number>();
     });
 
-  const [steps, distance, calories, activeCalories, restingHr] = await Promise.all([
-    single('steps'),
+  const [steps, distance, activeCalories, restingHr] = await Promise.all([
+    sumByDay(client, 'steps', date, date),
     optional('distance'),
-    optional('total-calories'),
     optional('active-energy-burned'),
-    optional('daily-resting-heart-rate'),
+    getHeartRateForDay(client, date),
   ]);
 
-  const distKm = distance ? distanceKmFrom(distance) : undefined;
+  const distKm = distance.get(date);
   return {
     summary: {
-      steps: steps ? pickNumber(steps, STEPS_KEYS) : undefined,
-      caloriesOut: calories ? pickNumber(calories, CALORIES_KEYS) : undefined,
-      activityCalories: activeCalories
-        ? pickNumber(activeCalories, ACTIVE_CALORIES_KEYS)
-        : undefined,
+      steps: steps.get(date),
+      activityCalories: activeCalories.get(date),
       distances: distKm !== undefined ? [{ activity: 'total', distance: distKm }] : undefined,
-      restingHeartRate: restingHr ? pickNumber(restingHr, RESTING_HR_KEYS) : undefined,
+      restingHeartRate: restingHr,
     },
   };
+}
+
+/** Single-day resting HR from the daily-resting-heart-rate list. */
+async function getHeartRateForDay(
+  client: GoogleHealthClient,
+  date: string,
+): Promise<number | undefined> {
+  try {
+    const dps = await listDataPoints(client, 'daily-resting-heart-rate', {
+      startTime: jstDayStart(date),
+      endTime: jstDayEnd(date),
+    });
+    for (const dp of dps) {
+      const bpm = pickNumber(payloadOf(dp, 'daily-resting-heart-rate'), RESTING_HR_KEYS);
+      if (bpm !== undefined) return bpm;
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.log(`[google-health] daily-resting-heart-rate list failed (skipping): ${reason}`);
+  }
+  return undefined;
 }
 
 export async function getActivityTimeSeries(
@@ -105,23 +157,17 @@ export async function getActivityTimeSeries(
       'get_activity_timeseries',
     );
   }
-  const buckets = await dailyRollUp(client, dataType, start, end);
-  const points = buckets.flatMap((bucket) => {
-    const dateTime = bucketDate(bucket);
-    if (!dateTime) return [];
-    const value =
-      resource === 'distance'
-        ? distanceKmFrom(bucket)
-        : pickNumber(
-            bucket,
-            resource === 'steps'
-              ? STEPS_KEYS
-              : resource === 'activityCalories'
-                ? ACTIVE_CALORIES_KEYS
-                : CALORIES_KEYS,
-          );
-    return [{ dateTime, value: value ?? 0 }];
-  });
+  if (dataType === 'total-calories') {
+    throw new GoogleHealthApiError(
+      400,
+      'total-calories has no working retrieval path on the Google Health v4 API',
+      'get_activity_timeseries',
+    );
+  }
+  const totals = await sumByDay(client, dataType, start, end);
+  const points = [...totals.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([dateTime, value]) => ({ dateTime, value }));
   return { resource, points };
 }
 
@@ -144,22 +190,36 @@ export async function getExerciseList(
     .slice(0, limit);
 }
 
+/**
+ * Exercise sessions nest under `dp.exercise`: the window is in
+ * `exercise.interval.{startTime,endTime}`, the activity in
+ * `exercise.exerciseType`/`displayName`, and aggregates in
+ * `exercise.metricsSummary.*` (distance in millimeters → km via /1e6).
+ */
 function exerciseFromDataPoint(dp: LooseRecord): ExerciseLog {
-  const start = pickString(dp, ['startTime']);
-  const end = pickString(dp, ['endTime']);
+  const exercise = payloadOf(dp, 'exercise');
+  const interval = subRecord(exercise, 'interval');
+  const start = pickString(interval, ['startTime']) ?? pickString(exercise, ['startTime']);
+  const end = pickString(interval, ['endTime']) ?? pickString(exercise, ['endTime']);
   const durationMs = start && end ? new Date(end).getTime() - new Date(start).getTime() : undefined;
-  const km = distanceKmFrom(dp);
+  const metrics = subRecord(exercise, 'metricsSummary');
+  const mm = pickNumber(metrics, ['distanceMillimeters', 'millimeters']);
+  const km = mm !== undefined ? mm / 1_000_000 : undefined;
   return {
     logId: dataPointLogId(dp),
-    activityName: pickString(dp, ['activityName', 'exerciseType', 'activityType']),
-    activityTypeId: pickNumber(dp, ['activityTypeId', 'exerciseTypeId']),
+    activityName: pickString(exercise, ['displayName', 'exerciseType', 'activityType']),
+    activityTypeId: pickNumber(exercise, ['exerciseType', 'activityTypeId', 'exerciseTypeId']),
     startTime: start ? toJstLocalIso(start) : undefined,
-    duration: durationMs ?? pickNumber(dp, ['durationMillis', 'durationMs']),
-    calories: pickNumber(dp, ['calories', 'energyKcal', 'activeEnergyBurned']),
-    steps: pickNumber(dp, ['steps']),
+    duration: durationMs ?? pickNumber(exercise, ['durationMillis', 'durationMs']),
+    calories: pickNumber(metrics, ['caloriesKcal', 'energyKcal', 'calories']),
+    steps: pickNumber(metrics, ['steps']),
     distance: km,
     distanceUnit: km !== undefined ? 'Kilometer' : undefined,
-    averageHeartRate: pickNumber(dp, ['averageHeartRate', 'avgHeartRate', 'averageBpm']),
+    averageHeartRate: pickNumber(metrics, [
+      'averageHeartRateBeatsPerMinute',
+      'averageHeartRate',
+      'avgHeartRate',
+    ]),
   };
 }
 
