@@ -65,8 +65,14 @@ pnpm install
 4. [Credentials ページ](https://console.developers.google.com/apis/credentials)で OAuth client ID(**Web application**)を作成:
    - **Authorized redirect URI**: `http://127.0.0.1:8787/google/callback`
    - `Client ID` と `Client Secret` を控える(Secret は後から再表示できない)
-5. **★ Publishing status を "In production" に昇格**([Audience ページ](https://console.developers.google.com/auth/audience))。
-   **Testing のまま認可すると refresh token が 7 日で失効**し、常駐 Worker の自動 refresh が毎週壊れる。個人利用(100 ユーザー未満)ならセキュリティレビュー無しで昇格でき、未検証アプリ警告は「詳細 → 続行」で通過できる
+5. **★ Publishing status を "In production"(本番環境)に昇格**([Audience ページ](https://console.developers.google.com/auth/audience))。
+
+   > **「公開ステータス = 本番環境」と「アプリの検証」は別物**。混同しないこと。
+   > - **7 日失効は "Testing" 固有の挙動**で、**本番環境に切り替えた時点で解消**される(アプリの検証完了は不要)。`Testing` のまま認可すると refresh token が 7 日で失効し、常駐 Worker の自動 refresh が毎週壊れる
+   > - Google Health のスコープは機密/制限付きスコープ扱いのため、本番環境にすると**検証センター**に「ブランディングの検証」「データアクセスの検証(審査に提出)」が**要対応として表示される**。ただしこれは**未確認アプリ警告を消して一般公開する**ための手続きで、**自分ひとりで使う分には完了不要**。審査に提出せず放置してよい
+   > - 認可時に「**Google はこのアプリを確認していません**」警告が出るが、**「詳細」→「(アプリ名)に移動(安全ではありません)」で続行**できる。未確認のままでも 100 ユーザー未満なら利用可能(個人利用は該当)
+   >
+   > つまり順序は「**本番環境に切替 → 検証センターの要対応は無視 → `pnpm run setup:google` で認可(警告を「詳細→続行」で通過)**」でよい。発行される refresh_token は本番環境なので長命になる(7 日で失効しない)
 
 ### 3. 初回認可と Cloudflare への投入
 

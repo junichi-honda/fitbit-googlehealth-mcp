@@ -218,7 +218,11 @@ async function main(): Promise<void> {
   console.log('★ Before continuing, confirm the OAuth consent screen is "In production"');
   console.log('  (https://console.developers.google.com/auth/audience).');
   console.log('  Refresh tokens issued under "Testing" expire after 7 days and the');
-  console.log('  unattended Worker refresh loop will break weekly.');
+  console.log('  unattended Worker refresh loop will break weekly. Being *in production*');
+  console.log('  is what lifts the 7-day limit — completing app verification is NOT');
+  console.log('  required for personal single-user use. If the Verification Center asks');
+  console.log('  for branding / data-access review, you can ignore it and click through');
+  console.log('  the "Google hasn\'t verified this app" warning (Advanced → Continue).');
   console.log('');
   console.log('Redirect URI (must match the OAuth client settings):');
   console.log(`  ${redirectUri}`);
