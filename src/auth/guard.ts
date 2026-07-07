@@ -87,15 +87,40 @@ export function isIpv4InCidr(ip: string, cidr: string): boolean {
   return (ipInt & mask) === (rangeInt & mask);
 }
 
+// Denial reasons worth alerting on: with IP allow-listing effectively open
+// (ALLOWED_CIDRS = 0.0.0.0/0), a wrong/absent secret is the signature of an
+// unauthorized probe rather than a misrouted client. `missing_secret` also
+// fires if MCP_SHARED_SECRET is unset server-side, which is itself worth
+// surfacing. Emitted as structured console.warn so Workers Logs / Logpush
+// can trigger notifications.
+const ALERT_REASONS: ReadonlySet<GuardDenyReason> = new Set(['missing_secret', 'secret_mismatch']);
+
 export const guardMiddleware = (): MiddlewareHandler<{ Bindings: Env }> => {
   return async (c, next) => {
+    const clientIp = c.req.header('CF-Connecting-IP') ?? undefined;
     const result = verifyAccess({
       secretFromPath: c.req.param('secret'),
       expectedSecret: c.env.MCP_SHARED_SECRET,
-      clientIp: c.req.header('CF-Connecting-IP') ?? undefined,
+      clientIp,
       allowedCidrs: c.env.ALLOWED_CIDRS,
     });
     if (!result.ok) {
+      if (ALERT_REASONS.has(result.reason)) {
+        console.warn(
+          JSON.stringify({
+            event: 'guard_denied',
+            severity: 'alert',
+            reason: result.reason,
+            status: result.status,
+            clientIp: clientIp ?? null,
+            country: c.req.header('CF-IPCountry') ?? null,
+            userAgent: c.req.header('User-Agent') ?? null,
+            // Never log the real path: it embeds the shared secret.
+            route: 'POST /mcp/:secret',
+            at: new Date().toISOString(),
+          }),
+        );
+      }
       return c.text(result.reason, result.status);
     }
     await next();
