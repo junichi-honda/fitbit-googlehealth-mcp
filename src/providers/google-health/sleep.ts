@@ -4,13 +4,14 @@ import type { GoogleHealthClient } from './client';
 import {
   addDays,
   batchDeleteDataPoints,
+  createDataPoint,
   dataPointLogId,
   epochToJstRfc3339,
   jstDayEnd,
+  jstInterval,
   jstRfc3339,
   type LooseRecord,
   listDataPoints,
-  patchDataPoints,
   pickArray,
   pickBoolean,
   pickNumber,
@@ -166,9 +167,9 @@ export async function logSleep(
   const startMs = new Date(jstRfc3339(startDate, input.startTime)).getTime();
   const endMs = startMs + input.durationMs;
 
-  const echoed = await patchDataPoints(client, 'sleep', [
-    { startTime: epochToJstRfc3339(startMs), endTime: epochToJstRfc3339(endMs) },
-  ]);
+  const echoed = await createDataPoint(client, 'sleep', {
+    sleep: { interval: jstInterval(epochToJstRfc3339(startMs), epochToJstRfc3339(endMs)) },
+  });
   const dp = echoed[0];
   const mapped = dp ? sleepFromDataPoint(dp) : undefined;
   return (

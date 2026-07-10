@@ -3,13 +3,14 @@ import type { BodyFatLog, BodyLog, LogBodyFatInput, LogWeightInput, WeightLog } 
 import type { GoogleHealthClient } from './client';
 import {
   batchDeleteDataPoints,
+  createDataPoint,
   dataPointLogId,
   jstDayEnd,
   jstDayStart,
   jstRfc3339,
+  jstSampleTime,
   type LooseRecord,
   listDataPoints,
-  patchDataPoints,
   payloadOf,
   pickNumber,
   pickString,
@@ -93,9 +94,9 @@ export async function logWeight(
 ): Promise<WeightLog> {
   const time = normalizeTime(input.time);
   const t = jstRfc3339(input.date, time);
-  const echoed = await patchDataPoints(client, 'weight', [
-    { startTime: t, endTime: t, value: { weightKg: input.weightKg } },
-  ]);
+  const echoed = await createDataPoint(client, 'weight', {
+    weight: { sampleTime: jstSampleTime(t), weightGrams: Math.round(input.weightKg * 1000) },
+  });
   const dp = echoed[0];
   const mapped = dp ? weightFromDataPoint(dp) : undefined;
   return (
@@ -114,9 +115,9 @@ export async function logBodyFat(
 ): Promise<BodyFatLog> {
   const time = normalizeTime(input.time);
   const t = jstRfc3339(input.date, time);
-  const echoed = await patchDataPoints(client, 'body-fat', [
-    { startTime: t, endTime: t, value: { percentage: input.fatPercent } },
-  ]);
+  const echoed = await createDataPoint(client, 'body-fat', {
+    bodyFat: { sampleTime: jstSampleTime(t), percentage: input.fatPercent },
+  });
   const dp = echoed[0];
   const mapped = dp ? bodyFatFromDataPoint(dp) : undefined;
   return (

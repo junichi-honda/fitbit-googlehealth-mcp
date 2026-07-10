@@ -11,25 +11,30 @@ import type {
 import type { GoogleHealthClient } from './client';
 import {
   batchDeleteDataPoints,
+  createDataPoint,
   dataPointLogId,
   jstDayEnd,
   jstDayStart,
+  jstInterval,
   jstRfc3339,
   type LooseRecord,
   listDataPoints,
-  patchDataPoints,
   payloadOf,
+  pickArray,
   pickNumber,
   pickString,
   stripUndefined,
   subRecord,
 } from './datapoints';
 
+// The v4 NutritionLog.mealType enum only offers BREAKFAST/LUNCH/DINNER/
+// SNACK/ANYTIME (plus BEFORE_*/AFTER_* variants) — there is no
+// MORNING_SNACK/AFTERNOON_SNACK, so both snack slots collapse to SNACK.
 const MEAL_TYPE_GOOGLE: Record<MealTypeT, string> = {
   Breakfast: 'BREAKFAST',
-  MorningSnack: 'MORNING_SNACK',
+  MorningSnack: 'SNACK',
   Lunch: 'LUNCH',
-  AfternoonSnack: 'AFTERNOON_SNACK',
+  AfternoonSnack: 'SNACK',
   Dinner: 'DINNER',
   Anytime: 'ANYTIME',
 };
@@ -50,6 +55,9 @@ const GOOGLE_MEAL_TO_ID: Record<string, number> = {
   MORNING_SNACK: 2,
   LUNCH: 3,
   AFTERNOON_SNACK: 4,
+  // The v4 enum only has a single SNACK; the morning/afternoon distinction is
+  // lost on write, so reads render it as the afternoon-snack id.
+  SNACK: 4,
   DINNER: 5,
   ANYTIME: 7,
 };
@@ -72,16 +80,43 @@ const MEAL_TIME: Record<MealTypeT, string> = {
 // (a string); keep the flatter candidates for older/echoed shapes.
 const WATER_KEYS = ['milliliters', 'volumeMl', 'amountMl', 'ml', 'volume', 'amount'] as const;
 
-/** Nutrition payload nests under `dp.nutritionLog`; nutrients sit inside it. */
+// NutrientQuantity.nutrient enum names for the per-nutrient rows carried in
+// `nutritionLog.nutrients[]` (each `{ nutrient, quantity: { grams } }`).
+const NUTRIENT_PROTEIN = 'PROTEIN';
+const NUTRIENT_FIBER = 'DIETARY_FIBER';
+const NUTRIENT_SODIUM = 'SODIUM';
+const NUTRIENT_SUGAR = 'SUGAR';
+
+/** grams for a NutrientQuantity row whose `nutrient` enum matches `name`. */
+function nutrientGrams(payload: LooseRecord, name: string): number | undefined {
+  for (const row of pickArray(payload, ['nutrients']) ?? []) {
+    if (pickString(row, ['nutrient']) === name) {
+      return pickNumber(subRecord(row, 'quantity'), ['grams']);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Nutrition payload nests under `dp.nutritionLog`. Energy is `energy.kcal`,
+ * carbs/fat are `{total*}.grams`, and protein/fiber/sodium/sugar live as
+ * enum-keyed rows in `nutrients[]`. Flat candidates are kept as a fallback for
+ * echoed/legacy shapes.
+ */
 function nutritionalValuesFrom(payload: LooseRecord): NutritionalValues {
   return {
-    calories: pickNumber(payload, ['calories', 'energyKcal']),
-    carbs: pickNumber(payload, ['totalCarbohydrate', 'carbs', 'carbohydrateGrams']),
-    fat: pickNumber(payload, ['totalFat', 'fat']),
-    fiber: pickNumber(payload, ['dietaryFiber', 'fiber']),
-    protein: pickNumber(payload, ['protein']),
-    sodium: pickNumber(payload, ['sodium']),
-    sugar: pickNumber(payload, ['sugars', 'sugar']),
+    calories:
+      pickNumber(subRecord(payload, 'energy'), ['kcal']) ?? pickNumber(payload, ['calories']),
+    carbs:
+      pickNumber(subRecord(payload, 'totalCarbohydrate'), ['grams']) ??
+      pickNumber(payload, ['totalCarbohydrate', 'carbs']),
+    fat:
+      pickNumber(subRecord(payload, 'totalFat'), ['grams']) ??
+      pickNumber(payload, ['totalFat', 'fat']),
+    fiber: nutrientGrams(payload, NUTRIENT_FIBER) ?? pickNumber(payload, ['dietaryFiber', 'fiber']),
+    protein: nutrientGrams(payload, NUTRIENT_PROTEIN) ?? pickNumber(payload, ['protein']),
+    sodium: nutrientGrams(payload, NUTRIENT_SODIUM) ?? pickNumber(payload, ['sodium']),
+    sugar: nutrientGrams(payload, NUTRIENT_SUGAR) ?? pickNumber(payload, ['sugars', 'sugar']),
   };
 }
 
@@ -92,10 +127,12 @@ function foodFromDataPoint(dp: LooseRecord, logDate: string): FoodLogEntry {
   return {
     logId: dataPointLogId(dp),
     loggedFood: {
-      name: pickString(payload, ['foodName', 'foodItem', 'name']),
+      name: pickString(payload, ['foodDisplayName', 'foodName', 'foodItem', 'name']),
       brand: pickString(payload, ['brandName', 'brand']),
       mealTypeId: mealType ? GOOGLE_MEAL_TO_ID[mealType.toUpperCase()] : undefined,
-      amount: pickNumber(payload, ['amount', 'servings']),
+      amount:
+        pickNumber(subRecord(payload, 'serving'), ['amount']) ??
+        pickNumber(payload, ['amount', 'servings']),
       calories: nutritionalValues.calories,
     },
     nutritionalValues,
@@ -167,25 +204,28 @@ export async function logFood(
 ): Promise<FoodLogEntry> {
   const t = jstRfc3339(input.date, MEAL_TIME[input.mealType]);
   const n = input.nutritionalValues;
-  const echoed = await patchDataPoints(client, 'nutrition-log', [
-    {
-      startTime: t,
-      endTime: t,
-      value: stripUndefined({
-        foodName: input.foodName,
-        brandName: input.brand,
-        mealType: MEAL_TYPE_GOOGLE[input.mealType],
-        amount: input.amount ?? 1,
-        calories: input.calories,
-        protein: n?.protein,
-        totalCarbohydrate: n?.carbs,
-        totalFat: n?.fat,
-        dietaryFiber: n?.fiber,
-        sodium: n?.sodium,
-        sugars: n?.sugar,
-      }),
-    },
-  ]);
+  // Per-nutrient rows for the enum-keyed `nutrients[]` array; carbs/fat are
+  // top-level *.grams members and energy is `energy.kcal`.
+  const nutrients = [
+    { nutrient: NUTRIENT_PROTEIN, grams: n?.protein },
+    { nutrient: NUTRIENT_FIBER, grams: n?.fiber },
+    { nutrient: NUTRIENT_SODIUM, grams: n?.sodium },
+    { nutrient: NUTRIENT_SUGAR, grams: n?.sugar },
+  ].flatMap(({ nutrient, grams }) =>
+    grams !== undefined ? [{ nutrient, quantity: { grams } }] : [],
+  );
+  const echoed = await createDataPoint(client, 'nutrition-log', {
+    nutritionLog: stripUndefined({
+      interval: jstInterval(t, t),
+      foodDisplayName: input.foodName,
+      mealType: MEAL_TYPE_GOOGLE[input.mealType],
+      serving: { amount: input.amount ?? 1 },
+      energy: input.calories !== undefined ? { kcal: input.calories } : undefined,
+      totalCarbohydrate: n?.carbs !== undefined ? { grams: n.carbs } : undefined,
+      totalFat: n?.fat !== undefined ? { grams: n.fat } : undefined,
+      nutrients: nutrients.length ? nutrients : undefined,
+    }),
+  });
   const dp = echoed[0];
   if (dp) return foodFromDataPoint(dp, input.date);
   return {
@@ -234,9 +274,12 @@ export async function logWater(
   input: LogWaterInput,
 ): Promise<WaterLogEntry> {
   const t = jstRfc3339(input.date, '12:00:00');
-  const echoed = await patchDataPoints(client, 'hydration-log', [
-    { startTime: t, endTime: t, value: { amountConsumed: { milliliters: input.amountMl } } },
-  ]);
+  const echoed = await createDataPoint(client, 'hydration-log', {
+    hydrationLog: {
+      interval: jstInterval(t, t),
+      amountConsumed: { milliliters: input.amountMl },
+    },
+  });
   const dp = echoed[0];
   return {
     logId: dp ? dataPointLogId(dp) : 0,

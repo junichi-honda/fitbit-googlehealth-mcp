@@ -467,3 +467,56 @@ developers.google.com がこの実行環境から到達不可(proxy のネット
 - meal preset ワークアラウンド(`save_meal_preset` / `log_preset`)は Google 移行後も残す。`nutrition-log` が栄養素を素直に保存するなら実益は薄れるが、呼び出し時の入力短縮としてはまだ有用
 - ツール description の文言はまだ Fitbit 前提の箇所がある(intraday pruning の注意書き等)。実データ検証で Google 側の挙動を確認してから書き直す(推測で書き換えると journal の実測主義に反する)
 - 移行完了(9 月停止 or 動作確認完了)後の撤去候補: `FitbitProvider` 一式、`setup:fitbit`、`FITBIT_*` secrets、`diagnose-food-log.ts`
+
+---
+
+## 2026-07-10 / 書き込み系の 404 を根治(PATCH → POST create)+ body 形状の実測修正
+
+`log_weight { weightKg: 59 }` が `Google Health API 404 at /v4/users/me/dataTypes/weight/dataPoints`(Google 標準の 404 HTML)で落ちる、という報告から着手。ユーザーの第一仮説は「dataType 名(`weight`)の綴り違い」だったが、**read は同じパス・同じ `weight` で成功している**ので綴りは無実。読み書きの非対称に的を絞った。
+
+### この環境では discovery document が引けた(前回の 403 が解けた)
+
+前回(2026-07-02)は developers.google.com が proxy で 403、フィールド仕様を「候補キー寛容パース」で逃げていた。今回は
+
+```
+curl "https://health.googleapis.com/$discovery/rest?version=v4"   # 269990 bytes, 200
+```
+
+が通り、`users.dataTypes.dataPoints` の**メソッド形状と各 dataType の body スキーマが確定**した。推測を全部消せた。
+
+### 根本原因
+
+`users.dataTypes.dataPoints` の標準メソッドは:
+
+- `list` … GET(コレクションに `filter` クエリ)
+- `create` … **POST(コレクション)**。body が単一 DataPoint
+- `patch` … PATCH だが **個別リソース `/dataPoints/{id}` 限定**(id 必須)
+- `batchDelete` … POST `:batchDelete`
+
+旧コードの `patchDataPoints` は **id を持たないコレクションに PATCH** していた。これは存在しないルート → 標準の 404 HTML。読み(GET list)は正しいルートなので通り、書き(PATCH collection)だけが 404、という非対称の正体がこれ。全 6 書き込みツール(log_weight / log_body_fat / log_activity / log_food / log_water / log_sleep)が同じ壊れたヘルパーを共有していた。
+
+### 修正
+
+- **`datapoints.ts`**: `patchDataPoints` を削除し `createDataPoint`(POST コレクション、body = DataPoint)に置換。合わせて必須の時刻フィールドを組むヘルパー `jstSampleTime` / `jstInterval` を追加(下記スキーマ由来)
+- 各ドメインの `log*` は POST に切替え、body を確定スキーマに合わせて組み直し
+
+**verb だけ直しても 400 になっていた**。discovery で判明した body の実際の形が旧コードの候補キー(フラットな `weightKg` 等)と構造から違ったため:
+
+- **DataPoint は `value` ラッパーを持たず**、payload が dataType の camelCase キー直下に入る(`{ weight: {...} }` / `{ bodyFat: {...} }` / `{ sleep: {...} }` / `{ exercise: {...} }` / `{ nutritionLog: {...} }` / `{ hydrationLog: {...} }`)
+- **必須**: sample 型は `sampleTime.{physicalTime, utcOffset}`、interval/session 型は `interval.{startTime, endTime, startUtcOffset, endUtcOffset}`。`*UtcOffset` は `google-duration`(JST = `"32400s"`)、時刻は RFC3339
+- **weight**: `weightGrams`(kg×1000、整数)。`weightKg` ではない
+- **nutrition-log**: `energy.kcal` / `totalCarbohydrate.grams` / `totalFat.grams` の構造体 + enum キーの `nutrients[]`(`{ nutrient: 'PROTEIN'|'DIETARY_FIBER'|'SODIUM'|'SUGAR', quantity: { grams } }`)。フラットな `protein` 等ではない
+- **mealType enum に MORNING_SNACK / AFTERNOON_SNACK は無い** — `BREAKFAST/LUNCH/DINNER/SNACK/ANYTIME`(+ BEFORE_*/AFTER_* 系)のみ。朝/午後スナックは両方 `SNACK` に潰れる(read は afternoon-snack id に寄せて復元)
+- **exercise**: メトリクスは `metricsSummary.{caloriesKcal, distanceMillimeters}`(km×1e6)。`exerciseType` は固定 enum なので任意の数値 activityId は書けず、`displayName` にラベルを載せる
+- **hydration-log**: `amountConsumed.milliliters`
+
+読み側(`nutritionalValuesFrom` / `foodFromDataPoint` / body・sleep・activity の整形)も確定スキーマを第一候補にしつつ、旧フラット候補は echo/legacy 用フォールバックとして残した(API は "actively evolving" のため寛容パースの設計思想は維持)。
+
+### 検証
+
+`npm run typecheck` 緑 / `npm run test` 64 緑 / `npm run lint` 緑(biome の config-migration info 2 件は既存・無関係)。nutrition.ts は行長で lint に触れたので `npm run format` で整形済み。
+
+### 残り(実機)
+
+- 実データで `create` の echo に DataPoint が返るか、その **id が数値か**(数値でないと `delete_*` が解決できない)を確認。5→6 の順(log → get → delete)で疎通
+- 上記チェックリスト自体は有効。ただし書き込みは「候補キーを足す」対応ではなく確定スキーマに寄せる方針に変わった点だけ差し替え
