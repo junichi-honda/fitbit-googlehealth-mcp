@@ -7,8 +7,15 @@ import type { GoogleHealthClient } from './client';
  *
  *   /v4/users/me/dataTypes/{dataType}/dataPoints
  *
- * with custom methods `:list`, `:rollUp`, `:dailyRollUp`, `:batchDelete`
- * (POST) plus PATCH on the collection for writes
+ * Reads/writes use the STANDARD methods (verified against the live v4
+ * discovery document, 2026-07-10):
+ *   - `list`   GET  on the collection with a `filter` query expression.
+ *   - `create` POST on the collection; the body IS a single DataPoint whose
+ *              payload nests under the camelCase dataType key (e.g. `weight`).
+ *   - `patch`  PATCH on an INDIVIDUAL `/dataPoints/{id}` — needs an id.
+ *   - `batchDelete` POST custom method `:batchDelete`.
+ * PATCHing the id-less collection is not a route and hard-404s, so writes go
+ * through `create` (POST), never PATCH.
  * (https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints).
  *
  * The per-dataType field names inside `value` are not pinned down here on
@@ -26,9 +33,7 @@ const DataPointsPageSchema = z.object({
   nextPageToken: z.string().optional(),
 });
 
-const PatchResponseSchema = z.object({
-  dataPoints: z.array(LooseRecordSchema).optional(),
-});
+const CreateResponseSchema = LooseRecordSchema;
 
 function dataPointsPath(dataType: string, method?: string): string {
   const base = `/v4/users/me/dataTypes/${dataType}/dataPoints`;
@@ -135,18 +140,24 @@ export async function listDataPoints(
   return points;
 }
 
-/** Create/update data points. Returns the server's echo (may be empty). */
-export async function patchDataPoints(
+/**
+ * Create one data point via the standard `create` method: POST to the
+ * collection with the DataPoint as the request body. `payload` is nested by
+ * the caller under the camelCase dataType key (e.g. `{ weight: {...} }`), so
+ * this just forwards it. Returns the server's echoed DataPoint (the created
+ * resource), wrapped in a one-element array so callers stay uniform.
+ */
+export async function createDataPoint(
   client: GoogleHealthClient,
   dataType: string,
-  dataPoints: LooseRecord[],
+  dataPoint: LooseRecord,
 ): Promise<LooseRecord[]> {
-  const res = await client.requestJson(PatchResponseSchema, {
+  const res = await client.requestJson(CreateResponseSchema, {
     path: dataPointsPath(dataType),
-    method: 'PATCH',
-    json: { dataPoints },
+    method: 'POST',
+    json: dataPoint,
   });
-  return res.dataPoints ?? [];
+  return [res];
 }
 
 export async function batchDeleteDataPoints(
@@ -320,6 +331,34 @@ function fnv1a(s: string): number {
 // Fitbit-style local (JST) dates and naive timestamps.
 
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+// The API's `utcOffset` members are google-duration strings, not RFC3339
+// zone suffixes. JST is +09:00 → 32400 seconds.
+const JST_UTC_OFFSET = '32400s';
+
+/**
+ * An `ObservationSampleTime` for a sample-type write (weight, body-fat).
+ * Both `physicalTime` (google-datetime) and `utcOffset` (google-duration)
+ * are required by the v4 schema.
+ */
+export function jstSampleTime(rfc3339: string): LooseRecord {
+  return { physicalTime: rfc3339, utcOffset: JST_UTC_OFFSET };
+}
+
+/**
+ * A time interval for session/interval writes. The v4 schema marks
+ * `startTime`/`endTime` and both `*UtcOffset` members required; the field
+ * names differ between `ObservationTimeInterval` (interval types) and
+ * `SessionTimeInterval` (sessions), but the required members are identical.
+ */
+export function jstInterval(startRfc3339: string, endRfc3339: string): LooseRecord {
+  return {
+    startTime: startRfc3339,
+    endTime: endRfc3339,
+    startUtcOffset: JST_UTC_OFFSET,
+    endUtcOffset: JST_UTC_OFFSET,
+  };
+}
 
 export function addDays(date: string, days: number): string {
   const d = new Date(`${date}T00:00:00Z`);

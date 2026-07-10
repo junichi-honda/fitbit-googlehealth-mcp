@@ -11,15 +11,16 @@ import type { GoogleHealthClient } from './client';
 import {
   addDays,
   batchDeleteDataPoints,
+  createDataPoint,
   dataPointDate,
   dataPointLogId,
   epochToJstRfc3339,
   jstDayEnd,
   jstDayStart,
+  jstInterval,
   jstRfc3339,
   type LooseRecord,
   listDataPoints,
-  patchDataPoints,
   payloadOf,
   pickNumber,
   pickString,
@@ -228,18 +229,24 @@ export async function logActivity(
   input: LogActivityInput,
 ): Promise<ExerciseLog> {
   const startMs = new Date(jstRfc3339(input.date, input.startTime)).getTime();
-  const echoed = await patchDataPoints(client, 'exercise', [
-    {
-      startTime: epochToJstRfc3339(startMs),
-      endTime: epochToJstRfc3339(startMs + input.durationMs),
-      value: stripUndefined({
-        activityName: input.activityName,
-        activityTypeId: input.activityId,
-        calories: input.manualCalories,
-        distanceMeters: input.distanceKm !== undefined ? input.distanceKm * 1000 : undefined,
-      }),
-    },
-  ]);
+  // `displayName` is the free-text label the read side maps to activityName;
+  // `exerciseType` is a fixed enum, so a caller's arbitrary activityId can't
+  // be written there. Metrics nest under `metricsSummary` (caloriesKcal,
+  // distanceMillimeters = km × 1e6), matching exerciseFromDataPoint.
+  const metricsSummary = stripUndefined({
+    caloriesKcal: input.manualCalories,
+    distanceMillimeters: input.distanceKm !== undefined ? input.distanceKm * 1_000_000 : undefined,
+  });
+  const echoed = await createDataPoint(client, 'exercise', {
+    exercise: stripUndefined({
+      interval: jstInterval(
+        epochToJstRfc3339(startMs),
+        epochToJstRfc3339(startMs + input.durationMs),
+      ),
+      displayName: input.activityName,
+      metricsSummary: Object.keys(metricsSummary).length ? metricsSummary : undefined,
+    }),
+  });
   const dp = echoed[0];
   if (dp) return exerciseFromDataPoint(dp);
   return {
