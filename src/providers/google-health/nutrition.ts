@@ -15,7 +15,7 @@ import {
   dataPointLogId,
   jstDayEnd,
   jstDayStart,
-  jstInterval,
+  jstInstantInterval,
   jstRfc3339,
   type LooseRecord,
   listDataPoints,
@@ -216,7 +216,7 @@ export async function logFood(
   );
   const echoed = await createDataPoint(client, 'nutrition-log', {
     nutritionLog: stripUndefined({
-      interval: jstInterval(t, t),
+      interval: jstInstantInterval(t),
       foodDisplayName: input.foodName,
       mealType: MEAL_TYPE_GOOGLE[input.mealType],
       serving: { amount: input.amount ?? 1 },
@@ -276,7 +276,7 @@ export async function logWater(
   const t = jstRfc3339(input.date, '12:00:00');
   const echoed = await createDataPoint(client, 'hydration-log', {
     hydrationLog: {
-      interval: jstInterval(t, t),
+      interval: jstInstantInterval(t),
       amountConsumed: { milliliters: input.amountMl },
     },
   });

@@ -360,6 +360,19 @@ export function jstInterval(startRfc3339: string, endRfc3339: string): LooseReco
   };
 }
 
+/**
+ * An interval for point-in-time logs (food, water) that have no real
+ * duration. The v4 API rejects any interval where `endTime <= startTime`
+ * ("start time must be strictly earlier than end time"), so nudge the end
+ * one second past the start. Second precision is deliberate: the list()
+ * civil_start_time filter keys off the date head, so sub-second offsets
+ * would round away and reintroduce the equal-bounds 400.
+ */
+export function jstInstantInterval(startRfc3339: string): LooseRecord {
+  const endMs = new Date(startRfc3339).getTime() + 1000;
+  return jstInterval(startRfc3339, epochToJstRfc3339(endMs));
+}
+
 export function addDays(date: string, days: number): string {
   const d = new Date(`${date}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
