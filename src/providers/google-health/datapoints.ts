@@ -165,10 +165,14 @@ export async function batchDeleteDataPoints(
   dataType: string,
   logIds: Array<number | string>,
 ): Promise<void> {
+  // batchDelete takes `names` — full DataPoint resource names
+  // (`users/me/dataTypes/{dataType}/dataPoints/{id}`), NOT bare ids under a
+  // `dataPointIds` field (that shape 400s "Unknown name dataPointIds").
+  const names = logIds.map((id) => `users/me/dataTypes/${dataType}/dataPoints/${id}`);
   await client.requestText({
     path: dataPointsPath(dataType, 'batchDelete'),
     method: 'POST',
-    json: { dataPointIds: logIds.map(String) },
+    json: { names },
   });
 }
 
