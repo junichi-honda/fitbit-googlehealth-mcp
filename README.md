@@ -106,7 +106,7 @@ pnpm wrangler kv namespace create TOKENS
 pnpm wrangler kv namespace create CACHE
 # 返ってきた id を wrangler.toml の <your-...-id> に貼り付け
 
-# Secret(MCP_SHARED_SECRET は URL-safe な hex を推奨)
+# Secret(MCP_SHARED_SECRET は Bearer トークンとして送るので URL-safe な hex を推奨)
 pnpm wrangler secret put GOOGLE_CLIENT_ID
 pnpm wrangler secret put GOOGLE_CLIENT_SECRET
 openssl rand -hex 32 | pnpm wrangler secret put MCP_SHARED_SECRET
@@ -139,9 +139,13 @@ pnpm deploy
 ### 5. Claude.ai に Custom Connector として登録
 
 1. [claude.ai](https://claude.ai) で Settings → Connectors → **Add Custom Connector**
-2. URL に `https://fitbit-googlehealth-mcp.<your-sub>.workers.dev/mcp/<MCP_SHARED_SECRET>` を貼る
-3. 認証方式は **OAuth なし**(URL に secret を埋め込んでいるため)
+2. URL に `https://fitbit-googlehealth-mcp.<your-sub>.workers.dev/mcp` を貼る
+3. 認証は Bearer トークン欄に `MCP_SHARED_SECRET` の値を入力(`Authorization: Bearer <token>` ヘッダーで送信される)
 4. 保存すると Claude モバイル / Desktop / Web に自動同期される
+
+> **移行メモ**: コネクタUIに Bearer トークン入力欄がない場合は、旧方式の
+> `https://.../mcp/<MCP_SHARED_SECRET>` を URL に貼る(認証なし)でも動作する。
+> 旧ルートは移行期間中のみ残しており、Bearer 接続の確認後に削除予定。
 
 モバイルで新規会話を開き、`+` → Connectors → **Fitbit** を ON にして完了。
 
@@ -247,7 +251,9 @@ pnpm test
 
 # MCP Inspector で tool schema 確認
 npx @modelcontextprotocol/inspector
-# URL: http://127.0.0.1:8787/mcp/dev-secret
+# URL: http://127.0.0.1:8787/mcp
+# Authorization ヘッダで `Bearer dev-secret` を送る設定が必要
+# (旧: http://127.0.0.1:8787/mcp/dev-secret も移行期間中は可)
 # CF-Connecting-IP ヘッダで 160.79.104.5 を送る設定が必要
 ```
 
@@ -262,8 +268,8 @@ Claude mobile / Desktop / Web
 Anthropic Cloud  (outbound CIDR 160.79.104.0/21)
       │
       ▼
-Cloudflare Workers  /mcp/<SECRET>
-  ├─ guard middleware  (SECRET + CIDR allowlist)
+Cloudflare Workers  /mcp  (Authorization: Bearer <SECRET>)
+  ├─ guard middleware  (Bearer token + CIDR allowlist)
   ├─ @hono/mcp  Streamable HTTP transport
   └─ McpServer
        ├─ HealthProvider interface   ← HEALTH_PROVIDER env で選択
@@ -289,11 +295,13 @@ Cloudflare Workers  /mcp/<SECRET>
 **個人用シンプル認証** の構成です。
 
 - **SECRET + Anthropic CIDR の 2 層防御**:
-  1. URL パス末尾の `<MCP_SHARED_SECRET>` が一致しなければ 401(constant-time 比較)
+  1. `Authorization: Bearer <MCP_SHARED_SECRET>` ヘッダーが一致しなければ 401(constant-time 比較、`WWW-Authenticate: Bearer` 付き)
   2. `CF-Connecting-IP` が `ALLOWED_CIDRS` env の CIDR のいずれにも属さなければ 403
+- トークンはヘッダーで送るため URL に認証情報が残らない(ブラウザ履歴・アクセスログ・Referer 対策)
+- 移行期間中のみ旧 `POST /mcp/:secret`(パス埋め込み)も併存。Bearer 接続確認後に削除予定
 - Anthropic outbound CIDR は公開情報 `160.79.104.0/21`。claude.ai 経由のリクエストだけを通す
 - `MCP_SHARED_SECRET` は Workers Secret に保管、コードには入れない
-- ローテーションは `wrangler secret put` + claude.ai の URL 更新だけで完結。Fitbit トークンに影響なし
+- ローテーションは `wrangler secret put` + claude.ai のトークン欄更新だけで完結(URL 変更不要)。Fitbit トークンに影響なし
 
 **脅威モデル**: SECRET が漏れて攻撃者が Anthropic CIDR 内からアクセスできる場合のみ、あなたの Fitbit データ閲覧・偽書き込みが可能。Fitbit アカウント自体の乗っ取りは不可(refresh_token は Worker 内にのみ存在)。
 

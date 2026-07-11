@@ -31,7 +31,8 @@ id = "<your-cache-namespace-id>"
 # Set the following secrets:
 #   wrangler secret put GOOGLE_CLIENT_ID
 #   wrangler secret put GOOGLE_CLIENT_SECRET
-#   wrangler secret put MCP_SHARED_SECRET   # `openssl rand -hex 32`
+#   wrangler secret put MCP_SHARED_SECRET   # `openssl rand -hex 32`; sent by the
+#     client as `Authorization: Bearer <secret>` (legacy: path segment of /mcp/:secret)
 # Only needed while HEALTH_PROVIDER = "fitbit":
 #   wrangler secret put FITBIT_CLIENT_ID
 #   wrangler secret put FITBIT_CLIENT_SECRET
