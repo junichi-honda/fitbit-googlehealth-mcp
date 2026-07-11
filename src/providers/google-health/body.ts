@@ -130,10 +130,10 @@ export async function logBodyFat(
   );
 }
 
-export async function deleteWeightLog(client: GoogleHealthClient, logId: number): Promise<void> {
+export async function deleteWeightLog(client: GoogleHealthClient, logId: string): Promise<void> {
   await batchDeleteDataPoints(client, 'weight', [logId]);
 }
 
-export async function deleteBodyFatLog(client: GoogleHealthClient, logId: number): Promise<void> {
+export async function deleteBodyFatLog(client: GoogleHealthClient, logId: string): Promise<void> {
   await batchDeleteDataPoints(client, 'body-fat', [logId]);
 }

@@ -80,7 +80,7 @@ export async function logActivity(
   return response.activityLog;
 }
 
-export async function deleteActivityLog(client: FitbitClient, logId: number): Promise<void> {
+export async function deleteActivityLog(client: FitbitClient, logId: string): Promise<void> {
   await client.requestText({
     path: `/1/user/-/activities/${logId}.json`,
     method: 'DELETE',

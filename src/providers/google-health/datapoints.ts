@@ -163,12 +163,21 @@ export async function createDataPoint(
 export async function batchDeleteDataPoints(
   client: GoogleHealthClient,
   dataType: string,
-  logIds: Array<number | string>,
+  logIds: string[],
 ): Promise<void> {
+  // batchDelete takes `names` — full DataPoint resource names, NOT bare ids
+  // under a `dataPointIds` field (that shape 400s "Unknown name dataPointIds").
+  // dataPointLogId hands back the server's own `name` verbatim (already a
+  // `users/{realId}/...` path — detectable by the embedded slash), so pass it
+  // through untouched: the `me` alias is REJECTED inside `names`. Only a bare
+  // id (no slash) needs a name built, best-effort under the `me` alias.
+  const names = logIds.map((id) =>
+    id.includes('/') ? id : `users/me/dataTypes/${dataType}/dataPoints/${id}`,
+  );
   await client.requestText({
     path: dataPointsPath(dataType, 'batchDelete'),
     method: 'POST',
-    json: { dataPointIds: logIds.map(String) },
+    json: { names },
   });
 }
 
@@ -290,40 +299,26 @@ export function dataPointDate(payload: LooseRecord): string | undefined {
 // ---------- data point identity ----------
 
 /**
- * The tool layer addresses entries by Fitbit-style numeric logId, so the
- * Google data point id (`dataPointId`, or the tail of the `name` resource
- * path) must stay numeric to round-trip through delete_* unchanged. Falls
- * back to the point's epoch-ms start time — or an FNV-1a hash for
- * non-numeric ids — so reads keep rendering; a fallback id cannot be
- * deleted through batchDelete and is logged for diagnosis.
+ * The opaque id delete_* sends back to batchDelete. PREFERS the server's full
+ * resource `name` (`users/{userId}/dataTypes/{dataType}/dataPoints/{id}`) and
+ * returns it verbatim, because that is exactly what batchDelete's `names`
+ * field validates against — the `me` user alias that works in request URLs is
+ * REJECTED inside the `names` payload ("Invalid argument: name"), and only the
+ * real user id the server minted is accepted. Falls back to the bare
+ * `dataPointId`/`id` (batchDelete reconstructs a `users/me/...` name from it,
+ * best-effort) or the epoch-ms start time when no id is present.
+ *
+ * Always a STRING, never coerced to number: Google ids are 18-19 digit
+ * integers beyond JS's safe-integer range (2^53), so `Number(id)` would
+ * silently round them and address a non-existent resource.
  */
-export function dataPointLogId(dp: LooseRecord): number {
-  const raw = pickString(dp, ['dataPointId', 'id']) ?? nameTail(dp);
-  if (raw !== undefined) {
-    const n = Number(raw);
-    if (Number.isFinite(n)) return n;
-    console.log(
-      `[google-health] non-numeric data point id "${raw}" — substituting a hash; delete_* cannot resolve it`,
-    );
-    return fnv1a(raw);
-  }
+export function dataPointLogId(dp: LooseRecord): string {
+  const name = typeof dp.name === 'string' && dp.name !== '' ? dp.name : undefined;
+  if (name) return name;
+  const raw = pickString(dp, ['dataPointId', 'id']);
+  if (raw !== undefined) return raw;
   const startTime = pickString(dp, ['startTime']);
-  return startTime ? new Date(startTime).getTime() : 0;
-}
-
-function nameTail(dp: LooseRecord): string | undefined {
-  const name = typeof dp.name === 'string' ? dp.name : undefined;
-  const tail = name?.split('/').pop();
-  return tail === '' ? undefined : tail;
-}
-
-function fnv1a(s: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    hash ^= s.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
+  return startTime ? String(new Date(startTime).getTime()) : '0';
 }
 
 // ---------- JST time plumbing ----------

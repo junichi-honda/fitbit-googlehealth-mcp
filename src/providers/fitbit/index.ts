@@ -152,22 +152,22 @@ export class FitbitProvider implements HealthProvider {
   logSleep(input: LogSleepInput): Promise<SleepLog> {
     return logSleep(this.client, input);
   }
-  deleteFoodLog(logId: number): Promise<void> {
+  deleteFoodLog(logId: string): Promise<void> {
     return deleteFoodLog(this.client, logId);
   }
-  deleteWaterLog(logId: number): Promise<void> {
+  deleteWaterLog(logId: string): Promise<void> {
     return deleteWaterLog(this.client, logId);
   }
-  deleteWeightLog(logId: number): Promise<void> {
+  deleteWeightLog(logId: string): Promise<void> {
     return deleteWeightLog(this.client, logId);
   }
-  deleteBodyFatLog(logId: number): Promise<void> {
+  deleteBodyFatLog(logId: string): Promise<void> {
     return deleteBodyFatLog(this.client, logId);
   }
-  deleteActivityLog(logId: number): Promise<void> {
+  deleteActivityLog(logId: string): Promise<void> {
     return deleteActivityLog(this.client, logId);
   }
-  deleteSleepLog(logId: number): Promise<void> {
+  deleteSleepLog(logId: string): Promise<void> {
     return deleteSleepLog(this.client, logId);
   }
 }

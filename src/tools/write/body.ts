@@ -84,13 +84,13 @@ export function registerBodyWriteTools(
       description:
         'Remove a previously logged weight entry by its logId (from log_weight output or from get_body_log.weight[].logId). Use this to undo a mis-typed or test reading.',
       inputSchema: {
-        logId: z.number().int().describe('Weight logId.'),
+        logId: z.string().describe('Weight logId.'),
         date: z
           .string()
           .describe('YYYY-MM-DD the entry was logged under. Used to invalidate caches.')
           .optional(),
       },
-      outputSchema: { deleted: z.boolean(), logId: z.number() },
+      outputSchema: { deleted: z.boolean(), logId: z.string() },
     },
     async ({ logId, date }) => {
       try {
@@ -115,9 +115,9 @@ export function registerBodyWriteTools(
       description:
         'Remove a previously logged body-fat entry by its logId (from log_body_fat output or from get_body_log.fat[].logId).',
       inputSchema: {
-        logId: z.number().int().describe('Body-fat logId.'),
+        logId: z.string().describe('Body-fat logId.'),
       },
-      outputSchema: { deleted: z.boolean(), logId: z.number() },
+      outputSchema: { deleted: z.boolean(), logId: z.string() },
     },
     async ({ logId }) => {
       try {

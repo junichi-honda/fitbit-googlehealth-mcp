@@ -174,7 +174,7 @@ export async function logSleep(
   const mapped = dp ? sleepFromDataPoint(dp) : undefined;
   return (
     mapped ?? {
-      logId: dp ? dataPointLogId(dp) : 0,
+      logId: dp ? dataPointLogId(dp) : '0',
       dateOfSleep: toJstDateString(endMs),
       startTime: toJstLocalIso(startMs),
       endTime: toJstLocalIso(endMs),
@@ -185,6 +185,6 @@ export async function logSleep(
   );
 }
 
-export async function deleteSleepLog(client: GoogleHealthClient, logId: number): Promise<void> {
+export async function deleteSleepLog(client: GoogleHealthClient, logId: string): Promise<void> {
   await batchDeleteDataPoints(client, 'sleep', [logId]);
 }

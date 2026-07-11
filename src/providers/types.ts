@@ -110,7 +110,9 @@ export type TimeSeries = z.infer<typeof TimeSeriesSchema>;
 
 // ---------- Exercise log list ----------
 export const ExerciseLogSchema = z.object({
-  logId: z.number().optional(),
+  // Ids are strings end-to-end: Google DataPoint ids exceed 2^53 and round
+  // under number. coerce accepts Fitbit's numeric ids and normalizes to string.
+  logId: z.coerce.string().optional(),
   activityName: z.string().optional(),
   activityTypeId: z.number().optional(),
   startTime: z.string().optional(),
@@ -159,7 +161,7 @@ export const SleepStageSchema = z.object({
   seconds: z.number(),
 });
 export const SleepLogSchema = z.object({
-  logId: z.number(),
+  logId: z.coerce.string(),
   dateOfSleep: z.string(),
   startTime: z.string(),
   endTime: z.string(),
@@ -184,7 +186,7 @@ export type SleepLog = z.infer<typeof SleepLogSchema>;
 
 // ---------- Body ----------
 export const WeightLogSchema = z.object({
-  logId: z.number().optional(),
+  logId: z.coerce.string().optional(),
   date: z.string(),
   time: z.string().optional(),
   weight: z.number(),
@@ -195,7 +197,7 @@ export const WeightLogSchema = z.object({
 export type WeightLog = z.infer<typeof WeightLogSchema>;
 
 export const BodyFatLogSchema = z.object({
-  logId: z.number().optional(),
+  logId: z.coerce.string().optional(),
   date: z.string(),
   time: z.string().optional(),
   fat: z.number(),
@@ -232,7 +234,7 @@ export const NutritionalValuesSchema = z.object({
 export type NutritionalValues = z.infer<typeof NutritionalValuesSchema>;
 
 export const FoodLogEntrySchema = z.object({
-  logId: z.number(),
+  logId: z.coerce.string(),
   loggedFood: z
     .object({
       name: z.string().optional(),
@@ -251,7 +253,7 @@ export const FoodLogEntrySchema = z.object({
 export type FoodLogEntry = z.infer<typeof FoodLogEntrySchema>;
 
 export const WaterLogEntrySchema = z.object({
-  logId: z.number(),
+  logId: z.coerce.string(),
   amount: z.number(),
 });
 export type WaterLogEntry = z.infer<typeof WaterLogEntrySchema>;
@@ -427,10 +429,10 @@ export interface HealthProvider {
   logBodyFat(input: LogBodyFatInput): Promise<BodyFatLog>;
   logActivity(input: LogActivityInput): Promise<ExerciseLog>;
   logSleep(input: LogSleepInput): Promise<SleepLog>;
-  deleteFoodLog(logId: number): Promise<void>;
-  deleteWaterLog(logId: number): Promise<void>;
-  deleteWeightLog(logId: number): Promise<void>;
-  deleteBodyFatLog(logId: number): Promise<void>;
-  deleteActivityLog(logId: number): Promise<void>;
-  deleteSleepLog(logId: number): Promise<void>;
+  deleteFoodLog(logId: string): Promise<void>;
+  deleteWaterLog(logId: string): Promise<void>;
+  deleteWeightLog(logId: string): Promise<void>;
+  deleteBodyFatLog(logId: string): Promise<void>;
+  deleteActivityLog(logId: string): Promise<void>;
+  deleteSleepLog(logId: string): Promise<void>;
 }

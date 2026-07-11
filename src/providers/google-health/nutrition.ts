@@ -229,7 +229,7 @@ export async function logFood(
   const dp = echoed[0];
   if (dp) return foodFromDataPoint(dp, input.date);
   return {
-    logId: 0,
+    logId: '0',
     loggedFood: {
       name: input.foodName,
       brand: input.brand,
@@ -282,15 +282,15 @@ export async function logWater(
   });
   const dp = echoed[0];
   return {
-    logId: dp ? dataPointLogId(dp) : 0,
+    logId: dp ? dataPointLogId(dp) : '0',
     amount: dp ? waterMlFrom(dp) || input.amountMl : input.amountMl,
   };
 }
 
-export async function deleteFoodLog(client: GoogleHealthClient, logId: number): Promise<void> {
+export async function deleteFoodLog(client: GoogleHealthClient, logId: string): Promise<void> {
   await batchDeleteDataPoints(client, 'nutrition-log', [logId]);
 }
 
-export async function deleteWaterLog(client: GoogleHealthClient, logId: number): Promise<void> {
+export async function deleteWaterLog(client: GoogleHealthClient, logId: string): Promise<void> {
   await batchDeleteDataPoints(client, 'hydration-log', [logId]);
 }

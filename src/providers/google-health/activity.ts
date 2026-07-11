@@ -259,6 +259,6 @@ export async function logActivity(
   };
 }
 
-export async function deleteActivityLog(client: GoogleHealthClient, logId: number): Promise<void> {
+export async function deleteActivityLog(client: GoogleHealthClient, logId: string): Promise<void> {
   await batchDeleteDataPoints(client, 'exercise', [logId]);
 }
