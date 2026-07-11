@@ -165,10 +165,15 @@ export async function batchDeleteDataPoints(
   dataType: string,
   logIds: string[],
 ): Promise<void> {
-  // batchDelete takes `names` — full DataPoint resource names
-  // (`users/me/dataTypes/{dataType}/dataPoints/{id}`), NOT bare ids under a
-  // `dataPointIds` field (that shape 400s "Unknown name dataPointIds").
-  const names = logIds.map((id) => `users/me/dataTypes/${dataType}/dataPoints/${id}`);
+  // batchDelete takes `names` — full DataPoint resource names, NOT bare ids
+  // under a `dataPointIds` field (that shape 400s "Unknown name dataPointIds").
+  // dataPointLogId hands back the server's own `name` verbatim (already a
+  // `users/{realId}/...` path — detectable by the embedded slash), so pass it
+  // through untouched: the `me` alias is REJECTED inside `names`. Only a bare
+  // id (no slash) needs a name built, best-effort under the `me` alias.
+  const names = logIds.map((id) =>
+    id.includes('/') ? id : `users/me/dataTypes/${dataType}/dataPoints/${id}`,
+  );
   await client.requestText({
     path: dataPointsPath(dataType, 'batchDelete'),
     method: 'POST',
@@ -294,25 +299,26 @@ export function dataPointDate(payload: LooseRecord): string | undefined {
 // ---------- data point identity ----------
 
 /**
- * The DataPoint id that delete_* must send back to batchDelete. Returned as a
- * STRING and never coerced to number: Google ids are 18-19 digit integers that
- * exceed JS's safe-integer range (2^53), so `Number(id)` silently rounds them
- * — the rounded id then addresses a non-existent resource and batchDelete
- * no-ops with a 200 (deletes nothing). Prefers `dataPointId`/`id`, else the
- * tail of the `name` resource path, else the epoch-ms start time as a
- * last-resort synthetic id (which cannot actually be deleted).
+ * The opaque id delete_* sends back to batchDelete. PREFERS the server's full
+ * resource `name` (`users/{userId}/dataTypes/{dataType}/dataPoints/{id}`) and
+ * returns it verbatim, because that is exactly what batchDelete's `names`
+ * field validates against — the `me` user alias that works in request URLs is
+ * REJECTED inside the `names` payload ("Invalid argument: name"), and only the
+ * real user id the server minted is accepted. Falls back to the bare
+ * `dataPointId`/`id` (batchDelete reconstructs a `users/me/...` name from it,
+ * best-effort) or the epoch-ms start time when no id is present.
+ *
+ * Always a STRING, never coerced to number: Google ids are 18-19 digit
+ * integers beyond JS's safe-integer range (2^53), so `Number(id)` would
+ * silently round them and address a non-existent resource.
  */
 export function dataPointLogId(dp: LooseRecord): string {
-  const raw = pickString(dp, ['dataPointId', 'id']) ?? nameTail(dp);
+  const name = typeof dp.name === 'string' && dp.name !== '' ? dp.name : undefined;
+  if (name) return name;
+  const raw = pickString(dp, ['dataPointId', 'id']);
   if (raw !== undefined) return raw;
   const startTime = pickString(dp, ['startTime']);
   return startTime ? String(new Date(startTime).getTime()) : '0';
-}
-
-function nameTail(dp: LooseRecord): string | undefined {
-  const name = typeof dp.name === 'string' ? dp.name : undefined;
-  const tail = name?.split('/').pop();
-  return tail === '' ? undefined : tail;
 }
 
 // ---------- JST time plumbing ----------
