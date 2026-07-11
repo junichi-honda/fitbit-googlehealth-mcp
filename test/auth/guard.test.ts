@@ -5,6 +5,7 @@ import {
   parseCidrList,
   timingSafeEqual,
   verifyAccess,
+  verifyBearerAccess,
 } from '../../src/auth/guard';
 
 describe('ipv4ToInt', () => {
@@ -173,5 +174,109 @@ describe('verifyAccess', () => {
         allowedCidrs: `${anthropicCidr}, 10.0.0.0/8`,
       }),
     ).toEqual({ ok: true });
+  });
+});
+
+describe('verifyBearerAccess', () => {
+  const anthropicCidr = '160.79.104.0/21';
+  const secret = 'correct-horse-battery-staple';
+
+  it('accepts a request with matching Bearer token and allowed IP', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: `Bearer ${secret}`,
+        expectedSecret: secret,
+        clientIp: '160.79.105.42',
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it('rejects when expectedSecret is not configured', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: `Bearer ${secret}`,
+        expectedSecret: undefined,
+        clientIp: '160.79.105.42',
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: false, status: 401, reason: 'missing_secret' });
+  });
+
+  it('rejects when the Authorization header is missing', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: undefined,
+        expectedSecret: secret,
+        clientIp: '160.79.105.42',
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: false, status: 401, reason: 'missing_authorization' });
+  });
+
+  it('rejects non-Bearer Authorization schemes', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: `Basic ${secret}`,
+        expectedSecret: secret,
+        clientIp: '160.79.105.42',
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: false, status: 401, reason: 'missing_authorization' });
+  });
+
+  it('rejects on token mismatch (constant time)', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: 'Bearer wrong',
+        expectedSecret: secret,
+        clientIp: '160.79.105.42',
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: false, status: 401, reason: 'token_mismatch' });
+  });
+
+  it('rejects an empty Bearer token', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: 'Bearer ',
+        expectedSecret: secret,
+        clientIp: '160.79.105.42',
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: false, status: 401, reason: 'token_mismatch' });
+  });
+
+  it('tolerates surrounding whitespace in the token', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: `Bearer  ${secret} `,
+        expectedSecret: secret,
+        clientIp: '160.79.105.42',
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it('still enforces the IP allowlist with a valid token', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: `Bearer ${secret}`,
+        expectedSecret: secret,
+        clientIp: '1.2.3.4',
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: false, status: 403, reason: 'ip_not_allowed' });
+  });
+
+  it('rejects when CF-Connecting-IP is missing even with a valid token', () => {
+    expect(
+      verifyBearerAccess({
+        authorizationHeader: `Bearer ${secret}`,
+        expectedSecret: secret,
+        clientIp: undefined,
+        allowedCidrs: anthropicCidr,
+      }),
+    ).toEqual({ ok: false, status: 403, reason: 'missing_client_ip' });
   });
 });
