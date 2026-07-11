@@ -172,10 +172,7 @@ export function registerFoodWriteTools(
       description:
         'Remove a previously logged food entry by its logId (from log_food or log_meal_photo output). Use this to undo a mistake.',
       inputSchema: {
-        logId: z
-          .number()
-          .int()
-          .describe('logId returned from a prior log_food / log_meal_photo call.'),
+        logId: z.string().describe('logId returned from a prior log_food / log_meal_photo call.'),
         date: z
           .string()
           .describe(
@@ -183,7 +180,7 @@ export function registerFoodWriteTools(
           )
           .optional(),
       },
-      outputSchema: { deleted: z.boolean(), logId: z.number() },
+      outputSchema: { deleted: z.boolean(), logId: z.string() },
     },
     async ({ logId, date }) => {
       try {
@@ -208,13 +205,13 @@ export function registerFoodWriteTools(
       description:
         'Remove a previously logged water entry by its logId (from log_water output or from get_food_log.water.water[].logId).',
       inputSchema: {
-        logId: z.number().int().describe('Water logId.'),
+        logId: z.string().describe('Water logId.'),
         date: z
           .string()
           .describe('YYYY-MM-DD the entry was logged under. Used to invalidate caches.')
           .optional(),
       },
-      outputSchema: { deleted: z.boolean(), logId: z.number() },
+      outputSchema: { deleted: z.boolean(), logId: z.string() },
     },
     async ({ logId, date }) => {
       try {

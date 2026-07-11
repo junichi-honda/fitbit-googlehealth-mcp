@@ -60,13 +60,13 @@ export function registerSleepWriteTool(
       description:
         'Remove a previously logged sleep entry by its logId (from log_sleep output or from get_sleep[].logId).',
       inputSchema: {
-        logId: z.number().int().describe('Sleep logId.'),
+        logId: z.string().describe('Sleep logId.'),
         date: z
           .string()
           .describe('YYYY-MM-DD the sleep was logged under. Used to invalidate caches.')
           .optional(),
       },
-      outputSchema: { deleted: z.boolean(), logId: z.number() },
+      outputSchema: { deleted: z.boolean(), logId: z.string() },
     },
     async ({ logId, date }) => {
       try {

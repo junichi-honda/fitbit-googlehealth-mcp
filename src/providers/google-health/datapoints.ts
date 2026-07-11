@@ -163,7 +163,7 @@ export async function createDataPoint(
 export async function batchDeleteDataPoints(
   client: GoogleHealthClient,
   dataType: string,
-  logIds: Array<number | string>,
+  logIds: string[],
 ): Promise<void> {
   // batchDelete takes `names` — full DataPoint resource names
   // (`users/me/dataTypes/{dataType}/dataPoints/{id}`), NOT bare ids under a
@@ -294,40 +294,25 @@ export function dataPointDate(payload: LooseRecord): string | undefined {
 // ---------- data point identity ----------
 
 /**
- * The tool layer addresses entries by Fitbit-style numeric logId, so the
- * Google data point id (`dataPointId`, or the tail of the `name` resource
- * path) must stay numeric to round-trip through delete_* unchanged. Falls
- * back to the point's epoch-ms start time — or an FNV-1a hash for
- * non-numeric ids — so reads keep rendering; a fallback id cannot be
- * deleted through batchDelete and is logged for diagnosis.
+ * The DataPoint id that delete_* must send back to batchDelete. Returned as a
+ * STRING and never coerced to number: Google ids are 18-19 digit integers that
+ * exceed JS's safe-integer range (2^53), so `Number(id)` silently rounds them
+ * — the rounded id then addresses a non-existent resource and batchDelete
+ * no-ops with a 200 (deletes nothing). Prefers `dataPointId`/`id`, else the
+ * tail of the `name` resource path, else the epoch-ms start time as a
+ * last-resort synthetic id (which cannot actually be deleted).
  */
-export function dataPointLogId(dp: LooseRecord): number {
+export function dataPointLogId(dp: LooseRecord): string {
   const raw = pickString(dp, ['dataPointId', 'id']) ?? nameTail(dp);
-  if (raw !== undefined) {
-    const n = Number(raw);
-    if (Number.isFinite(n)) return n;
-    console.log(
-      `[google-health] non-numeric data point id "${raw}" — substituting a hash; delete_* cannot resolve it`,
-    );
-    return fnv1a(raw);
-  }
+  if (raw !== undefined) return raw;
   const startTime = pickString(dp, ['startTime']);
-  return startTime ? new Date(startTime).getTime() : 0;
+  return startTime ? String(new Date(startTime).getTime()) : '0';
 }
 
 function nameTail(dp: LooseRecord): string | undefined {
   const name = typeof dp.name === 'string' ? dp.name : undefined;
   const tail = name?.split('/').pop();
   return tail === '' ? undefined : tail;
-}
-
-function fnv1a(s: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    hash ^= s.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
 }
 
 // ---------- JST time plumbing ----------

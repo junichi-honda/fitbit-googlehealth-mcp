@@ -76,13 +76,13 @@ export function registerActivityWriteTool(
       description:
         'Remove a previously logged exercise by its logId (from log_activity output or from get_exercise_list[].logId).',
       inputSchema: {
-        logId: z.number().int().describe('Activity logId.'),
+        logId: z.string().describe('Activity logId.'),
         date: z
           .string()
           .describe('YYYY-MM-DD the entry was logged under. Used to invalidate caches.')
           .optional(),
       },
-      outputSchema: { deleted: z.boolean(), logId: z.number() },
+      outputSchema: { deleted: z.boolean(), logId: z.string() },
     },
     async ({ logId, date }) => {
       try {

@@ -109,14 +109,14 @@ export async function logWater(client: FitbitClient, input: LogWaterInput): Prom
   return response.waterLog;
 }
 
-export async function deleteFoodLog(client: FitbitClient, logId: number): Promise<void> {
+export async function deleteFoodLog(client: FitbitClient, logId: string): Promise<void> {
   await client.requestText({
     path: `/1/user/-/foods/log/${logId}.json`,
     method: 'DELETE',
   });
 }
 
-export async function deleteWaterLog(client: FitbitClient, logId: number): Promise<void> {
+export async function deleteWaterLog(client: FitbitClient, logId: string): Promise<void> {
   await client.requestText({
     path: `/1/user/-/foods/log/water/${logId}.json`,
     method: 'DELETE',

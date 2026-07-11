@@ -42,7 +42,7 @@ export async function logSleep(client: FitbitClient, input: LogSleepInput): Prom
   return response.sleep;
 }
 
-export async function deleteSleepLog(client: FitbitClient, logId: number): Promise<void> {
+export async function deleteSleepLog(client: FitbitClient, logId: string): Promise<void> {
   await client.requestText({
     path: `/1.2/user/-/sleep/${logId}.json`,
     method: 'DELETE',
