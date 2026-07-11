@@ -11,7 +11,7 @@ import type {
 import type { GoogleHealthClient } from './client';
 import {
   batchDeleteDataPoints,
-  createDataPoint,
+  createAndResolveDataPoint,
   dataPointLogId,
   jstDayEnd,
   jstDayStart,
@@ -214,18 +214,24 @@ export async function logFood(
   ].flatMap(({ nutrient, grams }) =>
     grams !== undefined ? [{ nutrient, quantity: { grams } }] : [],
   );
-  const echoed = await createDataPoint(client, 'nutrition-log', {
-    nutritionLog: stripUndefined({
-      interval: jstInstantInterval(t),
-      foodDisplayName: input.foodName,
-      mealType: MEAL_TYPE_GOOGLE[input.mealType],
-      serving: { amount: input.amount ?? 1 },
-      energy: input.calories !== undefined ? { kcal: input.calories } : undefined,
-      totalCarbohydrate: n?.carbs !== undefined ? { grams: n.carbs } : undefined,
-      totalFat: n?.fat !== undefined ? { grams: n.fat } : undefined,
-      nutrients: nutrients.length ? nutrients : undefined,
-    }),
-  });
+  const range = { startTime: jstDayStart(input.date), endTime: jstDayEnd(input.date) };
+  const echoed = await createAndResolveDataPoint(
+    client,
+    'nutrition-log',
+    {
+      nutritionLog: stripUndefined({
+        interval: jstInstantInterval(t),
+        foodDisplayName: input.foodName,
+        mealType: MEAL_TYPE_GOOGLE[input.mealType],
+        serving: { amount: input.amount ?? 1 },
+        energy: input.calories !== undefined ? { kcal: input.calories } : undefined,
+        totalCarbohydrate: n?.carbs !== undefined ? { grams: n.carbs } : undefined,
+        totalFat: n?.fat !== undefined ? { grams: n.fat } : undefined,
+        nutrients: nutrients.length ? nutrients : undefined,
+      }),
+    },
+    range,
+  );
   const dp = echoed[0];
   if (dp) return foodFromDataPoint(dp, input.date);
   return {
@@ -274,12 +280,18 @@ export async function logWater(
   input: LogWaterInput,
 ): Promise<WaterLogEntry> {
   const t = jstRfc3339(input.date, '12:00:00');
-  const echoed = await createDataPoint(client, 'hydration-log', {
-    hydrationLog: {
-      interval: jstInstantInterval(t),
-      amountConsumed: { milliliters: input.amountMl },
+  const range = { startTime: jstDayStart(input.date), endTime: jstDayEnd(input.date) };
+  const echoed = await createAndResolveDataPoint(
+    client,
+    'hydration-log',
+    {
+      hydrationLog: {
+        interval: jstInstantInterval(t),
+        amountConsumed: { milliliters: input.amountMl },
+      },
     },
-  });
+    range,
+  );
   const dp = echoed[0];
   return {
     logId: dp ? dataPointLogId(dp) : '0',

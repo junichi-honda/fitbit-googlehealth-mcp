@@ -160,6 +160,41 @@ export async function createDataPoint(
   return [res];
 }
 
+/**
+ * Create a data point, then resolve it to the server-stored point whose full
+ * resource `name` delete_* actually needs.
+ *
+ * `create` returns a long-running `Operation`, not the DataPoint — so it never
+ * carries the `users/{realUserId}/.../dataPoints/{id}` name that batchDelete's
+ * `names` field validates against (the `me` alias is rejected there). Without
+ * this, writes hand back a synthetic `logId: "0"` that cannot be deleted, and
+ * users must re-fetch via get_* to find the real id before deleting.
+ *
+ * So snapshot the window's existing ids, create, then re-list and return the
+ * newly-appeared point. Diffing against the pre-create snapshot (rather than
+ * time-matching) stays correct even when several entries share a mealType and
+ * thus the same civil_start_time. Falls back to the raw create echo when the
+ * new point can't be pinpointed (e.g. list lag), so callers still get a body.
+ */
+export async function createAndResolveDataPoint(
+  client: GoogleHealthClient,
+  dataType: string,
+  dataPoint: LooseRecord,
+  range: { startTime: string; endTime: string },
+): Promise<LooseRecord[]> {
+  const before = new Set(
+    (await listDataPoints(client, dataType, range)).map((dp) => dataPointLogId(dp)),
+  );
+  const echoed = await createDataPoint(client, dataType, dataPoint);
+  const after = await listDataPoints(client, dataType, range);
+  const created = after.filter((dp) => !before.has(dataPointLogId(dp)));
+  // Exactly one new point is the norm; if the diff is empty (list lag) fall
+  // back to the create echo, and if it's >1 (a concurrent write raced in)
+  // prefer the last, which is the most-recently appended.
+  const newest = created[created.length - 1];
+  return newest ? [newest] : echoed;
+}
+
 export async function batchDeleteDataPoints(
   client: GoogleHealthClient,
   dataType: string,
