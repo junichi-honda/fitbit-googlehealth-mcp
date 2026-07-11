@@ -37,9 +37,11 @@ export function registerFoodWriteTools(
         '',
         'ALWAYS log with PFC by default. Estimate protein / fat / carbs (in',
         'grams) for the food from your own nutrition knowledge and pass them',
-        'in `nutritionalValues` on every call. Only omit a macro if it is',
-        'genuinely inestimable (e.g. water). If the estimate is rough, still',
-        'provide your best guess rather than leaving it empty.',
+        'on every call. You may nest them under `nutritionalValues` or pass',
+        'them as top-level `protein` / `carbs` / `fat` — both are recorded.',
+        'Only omit a macro if it is genuinely inestimable (e.g. water). If the',
+        'estimate is rough, still provide your best guess rather than leaving',
+        'it empty.',
         '',
         'For recurring meals (e.g. 作り置き), prefer save_meal_preset +',
         'log_preset: you store the PFC profile once on the MCP server and',
@@ -56,6 +58,39 @@ export function registerFoodWriteTools(
         nutritionalValues: NutritionalValuesSchema.describe(
           'PFC + other nutrition in grams. Estimate and include protein / fat / carbs by default on every call; omit only when a macro is genuinely inestimable.',
         ).optional(),
+        // Flat macro aliases: LLMs frequently pass protein/carbs/fat at the top
+        // level instead of nesting them under nutritionalValues. Accept them
+        // here and merge below so they aren't silently stripped by zod.
+        protein: z
+          .number()
+          .nonnegative()
+          .describe('Grams. Alias for nutritionalValues.protein.')
+          .optional(),
+        carbs: z
+          .number()
+          .nonnegative()
+          .describe('Grams. Alias for nutritionalValues.carbs.')
+          .optional(),
+        fat: z
+          .number()
+          .nonnegative()
+          .describe('Grams. Alias for nutritionalValues.fat.')
+          .optional(),
+        fiber: z
+          .number()
+          .nonnegative()
+          .describe('Grams. Alias for nutritionalValues.fiber.')
+          .optional(),
+        sugar: z
+          .number()
+          .nonnegative()
+          .describe('Grams. Alias for nutritionalValues.sugar.')
+          .optional(),
+        sodium: z
+          .number()
+          .nonnegative()
+          .describe('Grams. Alias for nutritionalValues.sodium.')
+          .optional(),
       },
       outputSchema: FoodLogEntrySchema.shape,
     },
@@ -63,7 +98,14 @@ export function registerFoodWriteTools(
       try {
         const date = input.date ?? todayJst();
         assertIsoDate(date, 'date');
-        const entry = await provider.logFood({ ...input, date });
+        const { protein, carbs, fat, fiber, sugar, sodium, ...rest } = input;
+        // Nested nutritionalValues wins over flat aliases when both are given.
+        const flat = { protein, carbs, fat, fiber, sugar, sodium };
+        const merged = { ...flat, ...rest.nutritionalValues };
+        const nutritionalValues = Object.values(merged).some((v) => v !== undefined)
+          ? merged
+          : undefined;
+        const entry = await provider.logFood({ ...rest, date, nutritionalValues });
         await invalidateFoodCaches(env, date);
         return {
           structuredContent: entry,
