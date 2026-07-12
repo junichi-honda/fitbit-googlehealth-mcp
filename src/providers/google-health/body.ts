@@ -3,7 +3,7 @@ import type { BodyFatLog, BodyLog, LogBodyFatInput, LogWeightInput, WeightLog } 
 import type { GoogleHealthClient } from './client';
 import {
   batchDeleteDataPoints,
-  createDataPoint,
+  createAndResolveDataPoint,
   dataPointLogId,
   jstDayEnd,
   jstDayStart,
@@ -94,9 +94,16 @@ export async function logWeight(
 ): Promise<WeightLog> {
   const time = normalizeTime(input.time);
   const t = jstRfc3339(input.date, time);
-  const echoed = await createDataPoint(client, 'weight', {
-    weight: { sampleTime: jstSampleTime(t), weightGrams: Math.round(input.weightKg * 1000) },
-  });
+  // Resolve to the server-stored point so the returned logId is the full
+  // resource name delete_weight_log needs (the create echo is just an
+  // Operation without it) — same treatment as logFood/logWater.
+  const range = { startTime: jstDayStart(input.date), endTime: jstDayEnd(input.date) };
+  const echoed = await createAndResolveDataPoint(
+    client,
+    'weight',
+    { weight: { sampleTime: jstSampleTime(t), weightGrams: Math.round(input.weightKg * 1000) } },
+    range,
+  );
   const dp = echoed[0];
   const mapped = dp ? weightFromDataPoint(dp) : undefined;
   return (
@@ -115,9 +122,13 @@ export async function logBodyFat(
 ): Promise<BodyFatLog> {
   const time = normalizeTime(input.time);
   const t = jstRfc3339(input.date, time);
-  const echoed = await createDataPoint(client, 'body-fat', {
-    bodyFat: { sampleTime: jstSampleTime(t), percentage: input.fatPercent },
-  });
+  const range = { startTime: jstDayStart(input.date), endTime: jstDayEnd(input.date) };
+  const echoed = await createAndResolveDataPoint(
+    client,
+    'body-fat',
+    { bodyFat: { sampleTime: jstSampleTime(t), percentage: input.fatPercent } },
+    range,
+  );
   const dp = echoed[0];
   const mapped = dp ? bodyFatFromDataPoint(dp) : undefined;
   return (

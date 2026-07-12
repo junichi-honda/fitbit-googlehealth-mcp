@@ -155,6 +155,12 @@ export function registerFoodWriteTools(
               carbs: z.number().nonnegative().optional(),
               fat: z.number().nonnegative().optional(),
               confidence: z.enum(['high', 'medium', 'low']).optional(),
+              // Nested alias: LLMs used to log_food's shape sometimes nest
+              // macros under nutritionalValues. Accept and merge below so
+              // they aren't silently stripped by zod.
+              nutritionalValues: NutritionalValuesSchema.describe(
+                'Alias for the flat protein / carbs / fat fields; nest here or pass them flat — both are recorded.',
+              ).optional(),
             }),
           )
           .min(1),
@@ -171,7 +177,14 @@ export function registerFoodWriteTools(
       try {
         const d = date ?? todayJst();
         assertIsoDate(d, 'date');
-        const entries = await provider.logMeal({ date: d, mealType, items, notes });
+        // Flat item fields are canonical and win over the nested alias.
+        const normalized = items.map(({ nutritionalValues: nv, ...item }) => ({
+          ...item,
+          protein: item.protein ?? nv?.protein,
+          carbs: item.carbs ?? nv?.carbs,
+          fat: item.fat ?? nv?.fat,
+        }));
+        const entries = await provider.logMeal({ date: d, mealType, items: normalized, notes });
         await invalidateFoodCaches(env, d);
         return {
           structuredContent: { entries, mealType, date: d, notes },

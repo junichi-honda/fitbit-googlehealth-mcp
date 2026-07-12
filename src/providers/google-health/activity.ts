@@ -11,7 +11,7 @@ import type { GoogleHealthClient } from './client';
 import {
   addDays,
   batchDeleteDataPoints,
-  createDataPoint,
+  createAndResolveDataPoint,
   dataPointDate,
   dataPointLogId,
   epochToJstRfc3339,
@@ -229,6 +229,10 @@ export async function logActivity(
   input: LogActivityInput,
 ): Promise<ExerciseLog> {
   const startMs = new Date(jstRfc3339(input.date, input.startTime)).getTime();
+  // epochToJstRfc3339 is second-precision, so a sub-second durationMs would
+  // round to an equal-bounds interval the v4 API 400s on ("start time must
+  // be strictly earlier than end time"); floor the duration at one second.
+  const endMs = startMs + Math.max(input.durationMs, 1000);
   // `displayName` is the free-text label the read side maps to activityName;
   // `exerciseType` is a fixed enum, so a caller's arbitrary activityId can't
   // be written there. Metrics nest under `metricsSummary` (caloriesKcal,
@@ -237,16 +241,24 @@ export async function logActivity(
     caloriesKcal: input.manualCalories,
     distanceMillimeters: input.distanceKm !== undefined ? input.distanceKm * 1_000_000 : undefined,
   });
-  const echoed = await createDataPoint(client, 'exercise', {
-    exercise: stripUndefined({
-      interval: jstInterval(
-        epochToJstRfc3339(startMs),
-        epochToJstRfc3339(startMs + input.durationMs),
-      ),
-      displayName: input.activityName,
-      metricsSummary: Object.keys(metricsSummary).length ? metricsSummary : undefined,
-    }),
-  });
+  // Resolve to the server-stored point so the returned logId is the full
+  // resource name delete_activity_log needs (the create echo is just an
+  // Operation without it) — same treatment as logFood/logWater. The list
+  // filter keys on interval.civil_start_time, so the start date's day
+  // window always contains the new point.
+  const range = { startTime: jstDayStart(input.date), endTime: jstDayEnd(input.date) };
+  const echoed = await createAndResolveDataPoint(
+    client,
+    'exercise',
+    {
+      exercise: stripUndefined({
+        interval: jstInterval(epochToJstRfc3339(startMs), epochToJstRfc3339(endMs)),
+        displayName: input.activityName,
+        metricsSummary: Object.keys(metricsSummary).length ? metricsSummary : undefined,
+      }),
+    },
+    range,
+  );
   const dp = echoed[0];
   if (dp) return exerciseFromDataPoint(dp);
   return {

@@ -13,7 +13,7 @@ import {
   scalePresetNutrition,
 } from '../../lib/presets';
 import type { HealthProvider } from '../../providers/types';
-import { FoodLogEntrySchema, MealType } from '../../providers/types';
+import { FoodLogEntrySchema, MealType, NutritionalValuesSchema } from '../../providers/types';
 
 const MealPresetSchema = z.object({
   name: z.string(),
@@ -66,12 +66,29 @@ export function registerPresetTools(server: McpServer, provider: HealthProvider,
         sodium: z.number().nonnegative().optional(),
         sugar: z.number().nonnegative().optional(),
         notes: z.string().optional().describe('Free text, e.g. "ご飯150g込み / 5食分作り置き"'),
+        // Nested alias: LLMs used to log_food's shape sometimes nest macros
+        // under nutritionalValues. Accept and merge below so they aren't
+        // silently stripped by zod and the preset saved without PFC.
+        nutritionalValues: NutritionalValuesSchema.describe(
+          'Alias for the top-level macro fields; nest here or pass them flat — both are recorded.',
+        ).optional(),
       },
       outputSchema: MealPresetSchema.shape,
     },
     async (input) => {
       try {
-        const preset = await savePreset(env, input);
+        // Flat fields are canonical and win over the nested alias when both
+        // are given. Strip the alias so it isn't persisted into KV.
+        const { nutritionalValues: nv, ...rest } = input;
+        const preset = await savePreset(env, {
+          ...rest,
+          protein: rest.protein ?? nv?.protein,
+          carbs: rest.carbs ?? nv?.carbs,
+          fat: rest.fat ?? nv?.fat,
+          fiber: rest.fiber ?? nv?.fiber,
+          sodium: rest.sodium ?? nv?.sodium,
+          sugar: rest.sugar ?? nv?.sugar,
+        });
         return {
           structuredContent: preset,
           content: [
