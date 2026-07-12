@@ -4,7 +4,7 @@ import type { GoogleHealthClient } from './client';
 import {
   addDays,
   batchDeleteDataPoints,
-  createDataPoint,
+  createAndResolveDataPoint,
   dataPointLogId,
   epochToJstRfc3339,
   jstDayEnd,
@@ -165,11 +165,26 @@ export async function logSleep(
   // start times therefore belong to the previous calendar day.
   const startDate = input.startTime >= '18:00' ? addDays(input.date, -1) : input.date;
   const startMs = new Date(jstRfc3339(startDate, input.startTime)).getTime();
-  const endMs = startMs + input.durationMs;
+  // epochToJstRfc3339 is second-precision, so a sub-second durationMs would
+  // round to an equal-bounds interval the v4 API 400s on ("start time must
+  // be strictly earlier than end time"); floor the duration at one second.
+  const endMs = startMs + Math.max(input.durationMs, 1000);
 
-  const echoed = await createDataPoint(client, 'sleep', {
-    sleep: { interval: jstInterval(epochToJstRfc3339(startMs), epochToJstRfc3339(endMs)) },
-  });
+  // Resolve to the server-stored point so the returned logId is the full
+  // resource name delete_sleep_log needs (the create echo is just an
+  // Operation without it) — same treatment as logFood/logWater. The list
+  // filter keys on sleep.interval.end_time, so a window straddling endMs
+  // always contains the new point.
+  const range = {
+    startTime: epochToJstRfc3339(startMs),
+    endTime: epochToJstRfc3339(endMs + 1000),
+  };
+  const echoed = await createAndResolveDataPoint(
+    client,
+    'sleep',
+    { sleep: { interval: jstInterval(epochToJstRfc3339(startMs), epochToJstRfc3339(endMs)) } },
+    range,
+  );
   const dp = echoed[0];
   const mapped = dp ? sleepFromDataPoint(dp) : undefined;
   return (
